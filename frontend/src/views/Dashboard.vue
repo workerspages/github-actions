@@ -127,9 +127,9 @@
             <n-divider style="margin: 6px 0" />
             <p>⚠️注意: Docker 容器默认是 root 用户，Chrome 限制 root 必须加 <n-text code>args=['--no-sandbox']</n-text></p>
             <n-divider style="margin: 6px 0" />
-            <p>模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
+            <p>🐍模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
             <n-divider style="margin: 6px 0" />
-            <p>模式 B: Node.js 脚本：在代码第一行写上魔法注释：<n-text code>// runtime: node</n-text></p>
+            <p>🟢模式 B: Node.js 脚本：在代码第一行写上魔法注释：<n-text code>// runtime: node</n-text></p>
           </n-alert>
 
         </n-form>

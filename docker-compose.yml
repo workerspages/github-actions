@@ -2,13 +2,19 @@ version: '3.8'
 
 services:
   fluxtask:
-    image: ghcr.io/你的github用户名/项目名:latest
+    # 如果你配置了 Github Actions，这里换成你的镜像地址
+    # image: ghcr.io/你的用户名/fluxtask:latest
+    
+    # 如果是本地开发/自己构建
+    build: .
     container_name: fluxtask
     restart: unless-stopped
     ports:
-      - "8080:8000"
+      - "8080:8000" # 访问 http://ip:8080
     volumes:
-      - ./data:/app/data      # 数据库
-      - ./scripts:/app/scripts # 脚本文件
+      - ./data:/app/data        # 数据库持久化
+      - ./scripts:/app/scripts  # 脚本文件持久化 (可选，方便debug)
     environment:
       - TZ=Asia/Shanghai
+      - JWT_SECRET=change_this_to_a_long_random_string
+      # - MAX_WORKERS=5 # 如果你需要并发控制

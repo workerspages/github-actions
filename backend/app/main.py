@@ -28,7 +28,7 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/github-actions.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
@@ -134,7 +134,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # ==========================================
-# 5. 核心逻辑 (实时日志更新)
+# 5. 核心逻辑 (实时日志 + Token注入)
 # ==========================================
 
 async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, float]:
@@ -191,7 +191,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     # Step 1: Setup
     t0 = time.time()
-    setup_log = f"Runner: github-actions-Worker\nTime: {datetime.now()}\n"
+    setup_log = f"Runner: FluxTask-Worker\nTime: {datetime.now()}\n"
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
@@ -199,26 +199,22 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     if delay > 0:
         logger.info(f"Task [{script.name}] waiting for {delay}s...")
         setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
-        # 记录正在等待
-        steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log}) # 2=Running
+        steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log}) 
         update_db()
         await asyncio.sleep(delay)
     
-    # 完成 Step 1
-    steps_log = [s for s in steps_log if s["name"] != "Set up job"] # 移除旧的状态
+    steps_log = [s for s in steps_log if s["name"] != "Set up job"]
     steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
     update_db()
 
     # Step 2: Install Dependencies
     t0 = time.time()
     python_exec = "python3"
-    # 记录开始安装
     steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": "Installing..."})
     update_db()
     
     try:
         python_exec, out, dur = await prepare_venv(script.id, script.requirements)
-        # 更新为完成
         steps_log.pop() 
         steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
         update_db()
@@ -232,7 +228,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     # Step 3: Run Script
     t0 = time.time()
     logger.info(f"Task [{script.name}] executing...")
-    # 记录开始运行
     steps_log.append({"name": "Run script", "status": 2, "duration": "...", "output": "Running..."})
     update_db()
 
@@ -240,16 +235,17 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
     with open(file_path, "w", encoding="utf-8") as f: f.write(script.code)
     
+    # --- 准备环境变量 ---
     env_vars = os.environ.copy()
+    # 1. 注入用户定义的 Secrets
     for s in db.query(Secret).all(): env_vars[s.key] = s.value
-
-    # === 新增：注入内部 API 凭据，允许脚本自我更新 Secrets ===
-    # 生成一个临时管理员 Token (有效期与系统设置一致)
+    
+    # 2. 注入内部 API 凭据 (关键！)
     internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
     env_vars["FLUX_TOKEN"] = internal_token
-    env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000" # 容器内部地址
-    # ========================================================
+    env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000" # 本地回环地址
     
+    # 3. 强制无缓冲输出
     env_vars["PYTHONUNBUFFERED"] = "1"
     
     try:
@@ -265,7 +261,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     # Step 4: Complete
     steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
-    update_db(script.last_status) # 保持之前的状态
+    update_db(script.last_status)
     
     logger.info(f"Task [{script.name}] finished.")
     db.close()
@@ -291,19 +287,20 @@ app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets
 def startup_event():
     scheduler.start()
     db = SessionLocal()
+    # 自动迁移列
     for col in ["requirements", "last_log"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
         except: 
             try: db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''")); db.commit()
             except: pass
     
-    # 初始化管理员
+    # 初始管理员
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
     if not db.query(User).filter(User.username == u).first():
         db.add(User(username=u, hashed_password=pwd_context.hash(p))); db.commit()
     
-    # --- 新增：初始化默认 GITHUB_ACTIONS 变量 ---
+    # 初始化默认 GITHUB_ACTIONS 变量
     if not db.query(Secret).filter(Secret.key == "GITHUB_ACTIONS").first():
         db.add(Secret(key="GITHUB_ACTIONS", value="true"))
         db.commit()
@@ -321,6 +318,7 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depen
 @app.get("/api/scripts", response_model=List[ScriptResponse])
 def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
     scripts = db.query(Script).all()
+    # 手动映射字段
     return [ScriptResponse(id=s.id, name=s.name, code=s.code, requirements=s.requirements, cron=s.cron_exp, delay=s.random_delay, last_run=s.last_run, last_status=s.last_status, last_log=s.last_log) for s in scripts]
 
 @app.post("/api/scripts", response_model=ScriptResponse)
@@ -367,9 +365,8 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
 @app.delete("/api/secrets/{secret_id}")
 def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Secret).filter(Secret.id == secret_id).first()
-    if not item: raise HTTPException(status_code=404, detail="Secret not found")
-    db.delete(item)
-    db.commit()
+    if not item: raise HTTPException(status_code=404)
+    db.delete(item); db.commit()
     return {"status": "deleted"}
 
 @app.get("/{full_path:path}")

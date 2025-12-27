@@ -102,6 +102,7 @@ cookie = os.environ.get("JD_COOKIE")
 print(f"当前 Cookie: {cookie}")
 ```
 > **提示**: 系统默认内置了 `GITHUB_ACTIONS=true` 变量，方便直接迁移 GitHub 的脚本。
+> **如何出错**：删除脚本Python 代码 中的 `if os.getenv('GITHUB_ACTIONS'):`
 
 ### 3. Selenium 脚本示例
 FluxTask 完美支持 Selenium。在脚本中使用时，**必须**添加以下 Docker 兼容参数：

@@ -134,42 +134,78 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # ==========================================
-# 5. 核心逻辑 (实时日志 + Token注入)
+# 5. 核心逻辑 (多语言支持)
 # ==========================================
 
-async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, float]:
+def detect_runtime(code: str) -> str:
+    """检测代码语言: 'python' 或 'node'"""
+    first_line = code.split('\n')[0].lower().strip()
+    if "// runtime: node" in first_line or "#!nodejs" in first_line or "// language: javascript" in first_line:
+        return "node"
+    return "python"
+
+async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[str, str, float]:
+    """根据运行时准备环境 (pip 或 npm)"""
     start_time = time.time()
-    venv_path = os.path.join(VENVS_DIR, str(script_id))
-    python_exec = os.path.join(venv_path, "bin", "python")
-    pip_exec = os.path.join(venv_path, "bin", "pip")
+    env_dir = os.path.join(VENVS_DIR, str(script_id))
     logs = []
+    
+    if not os.path.exists(env_dir):
+        os.makedirs(env_dir, exist_ok=True)
 
     try:
-        if not os.path.exists(python_exec):
-            logger.info(f"[{script_id}] Creating venv...")
-            logs.append(f"Creating venv at {venv_path}...")
-            subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
-            logs.append("Venv created.")
-        
-        if requirements and requirements.strip():
-            logger.info(f"[{script_id}] Installing requirements...")
-            logs.append(f"Installing dependencies:\n{requirements}")
-            req_file = os.path.join(venv_path, "requirements.txt")
-            with open(req_file, "w") as f: f.write(requirements)
-            cmd = [pip_exec, "install", "-r", req_file, "-i", "https://mirrors.aliyun.com/pypi/simple/"]
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            stdout, stderr = await proc.communicate()
-            if stdout: logs.append(stdout.decode().strip())
-            if stderr: logs.append(stderr.decode().strip())
-            if proc.returncode != 0: raise Exception("Dependency install failed")
-        else:
-            logs.append("No requirements. Skipping pip install.")
+        if runtime == "python":
+            # --- Python Venv Logic ---
+            python_exec = os.path.join(env_dir, "bin", "python")
+            if not os.path.exists(python_exec):
+                logs.append("Creating Python venv...")
+                subprocess.run([sys.executable, "-m", "venv", env_dir], check=True)
             
+            if requirements and requirements.strip():
+                logs.append(f"Installing Python deps: {requirements}")
+                req_file = os.path.join(env_dir, "requirements.txt")
+                with open(req_file, "w") as f: f.write(requirements)
+                # 使用清华源
+                cmd = [os.path.join(env_dir, "bin", "pip"), "install", "-r", req_file, "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                stdout, stderr = await proc.communicate()
+                if stdout: logs.append(stdout.decode())
+                if stderr: logs.append(stderr.decode())
+                if proc.returncode != 0: raise Exception("Pip install failed")
+            return python_exec, "\n".join(logs), time.time() - start_time
+
+        elif runtime == "node":
+            # --- Node.js Logic ---
+            # Node 不需要 venv，直接在目录里 npm install
+            logs.append(f"Preparing Node.js environment at {env_dir}...")
+            
+            # 初始化 package.json 如果不存在
+            pkg_file = os.path.join(env_dir, "package.json")
+            if not os.path.exists(pkg_file):
+                subprocess.run(["npm", "init", "-y"], cwd=env_dir, check=True, stdout=subprocess.DEVNULL)
+            
+            if requirements and requirements.strip():
+                # 处理依赖字符串，支持换行或空格分隔
+                deps = requirements.replace("\n", " ").split()
+                deps = [d.strip() for d in deps if d.strip()]
+                
+                if deps:
+                    logs.append(f"Installing Node deps: {', '.join(deps)}")
+                    # npm install <packages>
+                    cmd = ["npm", "install"] + deps
+                    proc = await asyncio.create_subprocess_exec(*cmd, cwd=env_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = await proc.communicate()
+                    if stdout: logs.append(stdout.decode())
+                    if stderr: logs.append(stderr.decode())
+                    if proc.returncode != 0: raise Exception("Npm install failed")
+            
+            return "node", "\n".join(logs), time.time() - start_time
+
     except Exception as e:
         logs.append(f"Error: {str(e)}")
-        return python_exec, "\n".join(logs), time.time() - start_time
+        raise Exception(f"Env setup failed: {e}")
 
-    return python_exec, "\n".join(logs), time.time() - start_time
+    return "python", "Unknown runtime", 0
 
 async def run_script_task(script_id: int, override_delay: int = -1):
     db = SessionLocal()
@@ -177,9 +213,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     if not script: return db.close()
 
     steps_log = []
-    total_start = time.time()
     
-    # 辅助函数：实时更新数据库日志
     def update_db(status="Running"):
         script.last_log = json.dumps(steps_log)
         script.last_status = status
@@ -189,33 +223,40 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     logger.info(f"Task [{script.name}] started.")
     update_db("Running")
 
+    # 0. Detect Runtime
+    runtime = detect_runtime(script.code)
+    logger.info(f"Task [{script.name}] detected runtime: {runtime}")
+
     # Step 1: Setup
     t0 = time.time()
-    setup_log = f"Runner: FluxTask-Worker\nTime: {datetime.now()}\n"
+    setup_log = f"Runner: FluxTask-Universal\nRuntime: {runtime.upper()}\nTime: {datetime.now()}\n"
+    
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
     
     if delay > 0:
-        logger.info(f"Task [{script.name}] waiting for {delay}s...")
         setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
-        steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log}) 
+        steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log})
         update_db()
         await asyncio.sleep(delay)
     
+    # 刷新 Step 1
     steps_log = [s for s in steps_log if s["name"] != "Set up job"]
     steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
     update_db()
 
     # Step 2: Install Dependencies
     t0 = time.time()
-    python_exec = "python3"
-    steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": "Installing..."})
+    steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": f"Installing {runtime} packages..."})
     update_db()
     
+    exec_cmd = ""
+    env_dir = os.path.join(VENVS_DIR, str(script_id))
+    
     try:
-        python_exec, out, dur = await prepare_venv(script.id, script.requirements)
-        steps_log.pop() 
+        exec_cmd, out, dur = await prepare_env(script.id, script.requirements, runtime)
+        steps_log.pop()
         steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
         update_db()
     except Exception as e:
@@ -227,30 +268,50 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     # Step 3: Run Script
     t0 = time.time()
-    logger.info(f"Task [{script.name}] executing...")
     steps_log.append({"name": "Run script", "status": 2, "duration": "...", "output": "Running..."})
     update_db()
 
+    # 保存代码文件
+    file_ext = ".js" if runtime == "node" else ".py"
     safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
-    file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
+    file_name = f"{safe_name}_{script.id}{file_ext}"
+    file_path = os.path.join(SCRIPTS_DIR, file_name)
+    
     with open(file_path, "w", encoding="utf-8") as f: f.write(script.code)
     
-    # --- 准备环境变量 ---
+    # 注入环境变量
     env_vars = os.environ.copy()
-    # 1. 注入用户定义的 Secrets
     for s in db.query(Secret).all(): env_vars[s.key] = s.value
     
-    # 2. 注入内部 API 凭据 (关键！)
     internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
     env_vars["FLUX_TOKEN"] = internal_token
-    env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000" # 本地回环地址
-    
-    # 3. 强制无缓冲输出
+    env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000"
     env_vars["PYTHONUNBUFFERED"] = "1"
     
+    # 如果是 Node，需要设置 NODE_PATH 以便能找到安装在 env_dir 下的包
+    if runtime == "node":
+        node_modules_path = os.path.join(env_dir, "node_modules")
+        env_vars["NODE_PATH"] = node_modules_path
+    
     try:
-        proc = await asyncio.create_subprocess_exec(python_exec, file_path, env=env_vars, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # 构造启动命令
+        if runtime == "node":
+            # Node 脚本: node /app/scripts/xxx.js
+            # 关键：cwd 要设置在 env_dir 才能正确加载 require() ? 
+            # 不，我们通过 NODE_PATH 解决
+            cmd_args = ["node", file_path]
+        else:
+            # Python 脚本: /app/data/venvs/1/bin/python /app/scripts/xxx.py
+            cmd_args = [exec_cmd, file_path]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd_args, 
+            env=env_vars, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.PIPE
+        )
         stdout, stderr = await proc.communicate()
+        
         steps_log.pop()
         steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
         update_db("Success" if proc.returncode == 0 else "Failed")
@@ -262,8 +323,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     # Step 4: Complete
     steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
     update_db(script.last_status)
-    
-    logger.info(f"Task [{script.name}] finished.")
     db.close()
 
 def add_job_to_scheduler(script: Script):
@@ -287,24 +346,19 @@ app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets
 def startup_event():
     scheduler.start()
     db = SessionLocal()
-    # 自动迁移列
     for col in ["requirements", "last_log"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
         except: 
             try: db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''")); db.commit()
             except: pass
     
-    # 初始管理员
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
     if not db.query(User).filter(User.username == u).first():
         db.add(User(username=u, hashed_password=pwd_context.hash(p))); db.commit()
     
-    # 初始化默认 GITHUB_ACTIONS 变量
     if not db.query(Secret).filter(Secret.key == "GITHUB_ACTIONS").first():
-        db.add(Secret(key="GITHUB_ACTIONS", value="true"))
-        db.commit()
-        logger.info("Initialized default secret: GITHUB_ACTIONS=true")
+        db.add(Secret(key="GITHUB_ACTIONS", value="true")); db.commit()
     
     for s in db.query(Script).filter(Script.is_active == True).all(): add_job_to_scheduler(s)
     db.close()
@@ -318,7 +372,6 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depen
 @app.get("/api/scripts", response_model=List[ScriptResponse])
 def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
     scripts = db.query(Script).all()
-    # 手动映射字段
     return [ScriptResponse(id=s.id, name=s.name, code=s.code, requirements=s.requirements, cron=s.cron_exp, delay=s.random_delay, last_run=s.last_run, last_status=s.last_status, last_log=s.last_log) for s in scripts]
 
 @app.post("/api/scripts", response_model=ScriptResponse)
@@ -365,7 +418,7 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
 @app.delete("/api/secrets/{secret_id}")
 def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Secret).filter(Secret.id == secret_id).first()
-    if not item: raise HTTPException(status_code=404)
+    if not item: raise HTTPException(status_code=404, detail="Secret not found")
     db.delete(item); db.commit()
     return {"status": "deleted"}
 

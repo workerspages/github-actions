@@ -57,7 +57,7 @@ COPY --from=frontend-builder /build/dist /app/static
 RUN mkdir -p /app/data /app/scripts /app/data/venvs
 
 ENV PYTHONPATH=/app
-ENV DATABASE_URL="sqlite:////app/data/fluxtask.db"
+ENV DATABASE_URL="sqlite:////app/data/github-actions.db"
 
 EXPOSE 8000
 

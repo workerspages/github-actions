@@ -17,46 +17,54 @@ const initEditor = () => {
   editorInstance = monaco.editor.create(editorContainer.value, {
     value: props.modelValue || '', 
     language: 'python',
-    theme: 'vs-dark', // 深色主题
+    theme: 'vs-dark',
     
-    // --- 核心配置 ---
-    automaticLayout: true,          // 自动适应父容器大小
-    scrollBeyondLastLine: false,    // 禁止滚动超过最后一行
-    renderLineHighlight: 'all',     // 高亮当前行
+    // --- 核心修复配置 ---
+    automaticLayout: true,          
+    scrollBeyondLastLine: false,    
+    renderLineHighlight: 'all',
     
-    // --- 滚动条优化 ---
+    // 强制行号宽度，防止数字重叠
+    lineNumbers: 'on',
+    lineNumbersMinChars: 4,  // 预留4位数字的宽度
+    glyphMargin: false,      // 关闭左侧图标栏，节省空间
+    folding: true,           // 启用代码折叠
+    
+    // 字体设置 (关键修复)
+    fontSize: 14,
+    fontFamily: "'Menlo', 'Monaco', 'Courier New', monospace", // 使用等宽字体
+    fontLigatures: false,    // 关闭连字，避免渲染异常
+    
+    // 滚动条优化
     scrollbar: {
       vertical: 'auto',
       horizontal: 'auto',
+      verticalScrollbarSize: 10,
+      horizontalScrollbarSize: 10,
       alwaysConsumeMouseWheel: false, 
     },
     
-    // --- 其他视觉优化 ---
+    // 视觉优化
     minimap: { enabled: false },    
-    fontSize: 14,
-    fontFamily: "'Fira Code', 'Consolas', monospace",
     tabSize: 4,
     insertSpaces: true,
-    lineNumbersMinChars: 3,         
     overviewRulerLanes: 0,          
-    hideCursorInOverviewRuler: true
+    hideCursorInOverviewRuler: true,
+    renderValidationDecorations: 'off' // 关闭波浪线验证，纯净显示
   })
 
-  // 监听内容变化传回父组件
   editorInstance.onDidChangeModelContent(() => {
     emit('update:modelValue', editorInstance.getValue())
   })
 }
 
 onMounted(() => {
-  // 关键修复：延迟 100ms 初始化，等待 Modal 动画结束和 DOM 布局稳定
-  // 否则在 Tabs 或 Modal 中编辑器高度可能计算为 0
+  // 延迟初始化，等待 DOM 布局稳定
   setTimeout(() => {
     initEditor()
   }, 100)
 })
 
-// 监听父组件传来的值变化
 watch(() => props.modelValue, (newValue) => {
   if (editorInstance && newValue !== editorInstance.getValue()) {
     editorInstance.setValue(newValue || '')
@@ -77,5 +85,10 @@ onBeforeUnmount(() => {
   height: 100%;
   overflow: hidden;
   border-radius: 4px;
+}
+/* 强制 Monaco 内部样式重置，防止外部 CSS 干扰行号 */
+:deep(.monaco-editor .margin-view-overlays .line-numbers) {
+  text-align: right !important;
+  padding-right: 5px !important;
 }
 </style>

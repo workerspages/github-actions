@@ -1,9 +1,30 @@
 # ⭐ Star 星星走起 动动发财手点点 ⭐
 
+* **每5天的10点05分执行**
 ```
-# 每5天的10点05分执行
 05 10 */5 * *
 ```
+* **多账户登录，请修改以下三处变量名**
+```
+        self.username = os.environ.get('GH_YUNXZH_HOTMAIL_USERNAME')
+        self.password = os.environ.get('GH_YUNXZH_HOTMAIL_PASSWORD')
+        self.gh_session = os.environ.get('GH_YUNXZH_HOTMAIL_SESSION', '').strip()
+```
+
+```
+        self.username = os.environ.get('GH_YUNXZH_GMAIL_USERNAME')
+        self.password = os.environ.get('GH_YUNXZH_GMAIL_PASSWORD')
+        self.gh_session = os.environ.get('GH_YUNXZH_GMAIL_SESSION', '').strip()
+```
+
+
+
+
+
+
+
+
+
 
 ## ClawCloud 官网(GitHub注册送5美元地址)：[run.claw.cloud](https://console.run.claw.cloud/signin?link=M9P7GXP3M3W5)
 

@@ -28,7 +28,6 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
-# 数据库配置
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
@@ -71,7 +70,6 @@ class Script(Base):
     is_active = Column(Boolean, default=True)
     last_run = Column(String, nullable=True)
     last_status = Column(String, nullable=True)
-    # 新增：存储结构化的 JSON 日志
     last_log = Column(Text, default="[]") 
 
 class Secret(Base):
@@ -97,8 +95,7 @@ class ScriptResponse(ScriptBase):
     id: int
     last_run: Optional[str] = None
     last_status: Optional[str] = None
-    last_log: Optional[str] = None # 返回日志JSON字符串
-    
+    last_log: Optional[str] = None
     class Config:
         from_attributes = True
 
@@ -137,13 +134,10 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # ==========================================
-# 5. 核心逻辑：分阶段执行与日志记录
+# 5. 核心逻辑
 # ==========================================
 
 async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, float]:
-    """
-    返回: (python_executable_path, log_output, duration)
-    """
     start_time = time.time()
     venv_path = os.path.join(VENVS_DIR, str(script_id))
     python_exec = os.path.join(venv_path, "bin", "python")
@@ -152,30 +146,22 @@ async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, flo
 
     try:
         if not os.path.exists(python_exec):
-            logs.append(f"Creating virtual environment at {venv_path}...")
+            logs.append(f"Creating venv at {venv_path}...")
             subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
-            logs.append("Virtual environment created successfully.")
-        else:
-            logs.append("Virtual environment already exists.")
-
+            logs.append("Venv created.")
+        
         if requirements and requirements.strip():
-            logs.append(f"Installing dependencies: \n{requirements}")
+            logs.append(f"Installing dependencies:\n{requirements}")
             req_file = os.path.join(venv_path, "requirements.txt")
-            with open(req_file, "w") as f:
-                f.write(requirements)
-            
-            # 安装依赖
+            with open(req_file, "w") as f: f.write(requirements)
             cmd = [pip_exec, "install", "-r", req_file, "-i", "https://mirrors.aliyun.com/pypi/simple/"]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             stdout, stderr = await proc.communicate()
-            
             if stdout: logs.append(stdout.decode().strip())
             if stderr: logs.append(stderr.decode().strip())
-            
-            if proc.returncode != 0:
-                raise Exception("Dependency installation failed")
+            if proc.returncode != 0: raise Exception("Dependency install failed")
         else:
-            logs.append("No requirements specified. Skipping pip install.")
+            logs.append("No requirements. Skipping pip install.")
             
     except Exception as e:
         logs.append(f"Error: {str(e)}")
@@ -184,125 +170,60 @@ async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, flo
     return python_exec, "\n".join(logs), time.time() - start_time
 
 async def run_script_task(script_id: int, override_delay: int = -1):
-    """
-    执行脚本，并生成类似 GitHub Actions 的结构化日志
-    """
     db = SessionLocal()
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script: return db.close()
 
-    # 初始化日志结构 (仿 GitHub Actions Steps)
-    # 结构: { name: str, status: 0|1|2 (success,fail,run), duration: str, output: str }
     steps_log = []
-    
     total_start = time.time()
 
-    # --- Step 1: Set up job ---
+    # Step 1: Setup
     t0 = time.time()
-    setup_log = f"Runner: FluxTask-Worker-1\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nOS: Linux (Docker)\n"
-    
-    # 处理随机延时
+    setup_log = f"Runner: FluxTask-Worker\nTime: {datetime.now()}\n"
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
-    
     if delay > 0:
-        setup_log += f"Anti-Bot: Sleeping for {delay} seconds...\n"
+        setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
         await asyncio.sleep(delay)
     
-    steps_log.append({
-        "name": "Set up job",
-        "status": 0,
-        "duration": f"{time.time() - t0:.2f}s",
-        "output": setup_log
-    })
+    steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
 
-    # --- Step 2: Install dependencies ---
+    # Step 2: Install
     t0 = time.time()
     python_exec = "python3"
     try:
-        python_exec, install_output, install_dur = await prepare_venv(script.id, script.requirements)
-        steps_log.append({
-            "name": "Install dependencies",
-            "status": 0,
-            "duration": f"{install_dur:.2f}s",
-            "output": install_output
-        })
+        python_exec, out, dur = await prepare_venv(script.id, script.requirements)
+        steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
     except Exception as e:
-        steps_log.append({
-            "name": "Install dependencies",
-            "status": 1,
-            "duration": f"{time.time() - t0:.2f}s",
-            "output": f"Failed to setup environment: {e}"
-        })
-        # 依赖失败则终止
-        script.last_status = "Failed"
-        script.last_log = json.dumps(steps_log)
-        script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        db.commit()
-        db.close()
-        return
+        steps_log.append({"name": "Install dependencies", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
+        script.last_status = "Failed"; script.last_log = json.dumps(steps_log); script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.commit(); db.close(); return
 
-    # --- Step 3: Run script ---
+    # Step 3: Run
     t0 = time.time()
-    
-    # 准备文件
     safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
     file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(script.code)
+    with open(file_path, "w", encoding="utf-8") as f: f.write(script.code)
     
-    # 注入环境变量
     env_vars = os.environ.copy()
-    for s in db.query(Secret).all():
-        env_vars[s.key] = s.value
+    for s in db.query(Secret).all(): env_vars[s.key] = s.value
     env_vars["PYTHONUNBUFFERED"] = "1"
     
-    # 执行
     try:
-        process = await asyncio.create_subprocess_exec(
-            python_exec, file_path,
-            env=env_vars,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
-        )
-        stdout, stderr = await process.communicate()
-        
-        output_str = stdout.decode().strip() + "\n" + stderr.decode().strip()
-        
-        steps_log.append({
-            "name": "Run script",
-            "status": 0 if process.returncode == 0 else 1,
-            "duration": f"{time.time() - t0:.2f}s",
-            "output": output_str
-        })
-        
-        script.last_status = "Success" if process.returncode == 0 else "Failed"
-    
+        proc = await asyncio.create_subprocess_exec(python_exec, file_path, env=env_vars, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout, stderr = await proc.communicate()
+        steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
+        script.last_status = "Success" if proc.returncode == 0 else "Failed"
     except Exception as e:
-        steps_log.append({
-            "name": "Run script",
-            "status": 1,
-            "duration": f"{time.time() - t0:.2f}s",
-            "output": f"System execution error: {e}"
-        })
+        steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
         script.last_status = "Error"
 
-    # --- Step 4: Complete job ---
-    total_duration = time.time() - total_start
-    steps_log.append({
-        "name": "Complete job",
-        "status": 0,
-        "duration": f"{0.1:.2f}s",
-        "output": f"Job completed.\nTotal duration: {total_duration:.2f}s\nClean up finished."
-    })
-
-    # 保存所有日志
+    # Step 4: Complete
+    steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
     script.last_log = json.dumps(steps_log)
     script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
-    db.commit()
-    db.close()
+    db.commit(); db.close()
 
 def add_job_to_scheduler(script: Script):
     try: scheduler.remove_job(str(script.id))
@@ -325,52 +246,36 @@ app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets
 def startup_event():
     scheduler.start()
     db = SessionLocal()
-    
-    # 自动迁移: 添加 requirements 和 last_log 列
     for col in ["requirements", "last_log"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
         except: 
-            logger.warning(f"Adding missing column: {col}")
             try: db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''")); db.commit()
             except: pass
-            
-    # 管理员
+    
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
     if not db.query(User).filter(User.username == u).first():
-        db.add(User(username=u, hashed_password=pwd_context.hash(p)))
-        db.commit()
+        db.add(User(username=u, hashed_password=pwd_context.hash(p))); db.commit()
     
-    # 任务
-    for s in db.query(Script).filter(Script.is_active == True).all():
-        add_job_to_scheduler(s)
+    for s in db.query(Script).filter(Script.is_active == True).all(): add_job_to_scheduler(s)
     db.close()
 
 @app.post("/token")
 async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form.username).first()
-    if not user or not pwd_context.verify(form.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Error")
+    if not user or not pwd_context.verify(form.password, user.hashed_password): raise HTTPException(status_code=400)
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 @app.get("/api/scripts", response_model=List[ScriptResponse])
 def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
     scripts = db.query(Script).all()
-    return [
-        ScriptResponse(
-            id=s.id, name=s.name, code=s.code, requirements=s.requirements,
-            cron=s.cron_exp, delay=s.random_delay, last_run=s.last_run, last_status=s.last_status,
-            last_log=s.last_log # 返回日志
-        ) for s in scripts
-    ]
+    return [ScriptResponse(id=s.id, name=s.name, code=s.code, requirements=s.requirements, cron=s.cron_exp, delay=s.random_delay, last_run=s.last_run, last_status=s.last_status, last_log=s.last_log) for s in scripts]
 
 @app.post("/api/scripts", response_model=ScriptResponse)
 def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
-    if db.query(Script).filter(Script.name == s.name).first():
-        raise HTTPException(status_code=400, detail="Exists")
+    if db.query(Script).filter(Script.name == s.name).first(): raise HTTPException(status_code=400, detail="Exists")
     new_s = Script(name=s.name, code=s.code, requirements=s.requirements, cron_exp=s.cron, random_delay=s.delay, last_log="[]")
-    db.add(new_s); db.commit(); db.refresh(new_s)
-    add_job_to_scheduler(new_s)
+    db.add(new_s); db.commit(); db.refresh(new_s); add_job_to_scheduler(new_s)
     return ScriptResponse(id=new_s.id, name=new_s.name, code=new_s.code, requirements=new_s.requirements, cron=new_s.cron_exp, delay=new_s.random_delay, last_run=new_s.last_run, last_status=new_s.last_status, last_log=new_s.last_log)
 
 @app.put("/api/scripts/{script_id}", response_model=ScriptResponse)
@@ -393,8 +298,7 @@ def delete_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_c
 
 @app.post("/api/scripts/{script_id}/run")
 async def run_now(script_id: int, u=Depends(get_current_user)):
-    asyncio.create_task(run_script_task(script_id, 0))
-    return {"status": "triggered"}
+    asyncio.create_task(run_script_task(script_id, 0)); return {"status": "triggered"}
 
 @app.get("/api/secrets", response_model=List[SecretResponse])
 def get_secrets(db: Session = Depends(get_db), u=Depends(get_current_user)):
@@ -407,6 +311,15 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
         exist.value = s.value; db.commit(); return {"id": exist.id, "key": exist.key}
     new_s = Secret(key=s.key, value=s.value); db.add(new_s); db.commit(); db.refresh(new_s)
     return {"id": new_s.id, "key": new_s.key}
+
+# --- 新增：删除 Secret 接口 ---
+@app.delete("/api/secrets/{secret_id}")
+def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
+    item = db.query(Secret).filter(Secret.id == secret_id).first()
+    if not item: raise HTTPException(status_code=404, detail="Secret not found")
+    db.delete(item)
+    db.commit()
+    return {"status": "deleted"}
 
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):

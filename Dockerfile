@@ -86,7 +86,7 @@ RUN mkdir -p /app/data /app/scripts /app/data/venvs
 
 # 环境变量设置
 ENV PYTHONPATH=/app
-ENV DATABASE_URL="sqlite:////app/data/fluxtask.db"
+ENV DATABASE_URL="sqlite:////app/data/github-actions.db"
 
 # 暴露端口
 EXPOSE 8000

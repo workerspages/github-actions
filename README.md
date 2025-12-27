@@ -14,10 +14,6 @@
 
 ### 1. 启动服务
 
-```bash
-docker-compose up -d
-
-
 
 ### 🛠️ 必须要做的修改 (Python 脚本)
 

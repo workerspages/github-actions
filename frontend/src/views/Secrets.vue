@@ -1,7 +1,11 @@
 <template>
   <n-layout style="height: 100vh">
     <n-layout-header bordered style="padding: 20px;">
-      <n-page-header subtitle="管理脚本运行所需的环境变量 (如 COOKIE, TOKEN)" on-back="() => $router.push('/')">
+      <!-- 修复：使用 @back 监听返回事件 -->
+      <n-page-header 
+        subtitle="管理脚本运行所需的环境变量 (如 COOKIE, TOKEN)" 
+        @back="handleBack"
+      >
         <template #title>Secrets 管理</template>
         <template #extra>
           <n-button type="primary" @click="showModal = true">添加 Secret</n-button>
@@ -45,8 +49,13 @@ const form = ref({ key: '', value: '' })
 const columns = [
   { title: 'Name', key: 'key', render: (row) => h(NTag, { type: 'info', bordered: false }, { default: () => row.key }) },
   { title: 'Value', key: 'value', render: () => '******' }, // 永远不显示明文
-  { title: 'Created', key: 'id' } // 简单展示ID作为占位
+  { title: 'ID', key: 'id' } 
 ]
+
+// 返回主页函数
+const handleBack = () => {
+  router.push('/')
+}
 
 const fetchSecrets = async () => {
   try {

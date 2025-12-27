@@ -120,8 +120,11 @@
           <!-- 更新后的提示信息 -->
           <n-alert type="info" :show-icon="false" title="提示">
             <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
-            <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> 内容。</p>
+            <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> (Python) 或包名 (Node.js)。</p>
             <p>如果出错: 删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
+            <n-divider style="margin: 6px 0" />
+            <p>模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
+            <p>模式 B: Node.js 脚本：在代码第一行写上魔法注释：<n-text code>// runtime: node</n-text></p>
           </n-alert>
 
         </n-form>

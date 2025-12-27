@@ -1,5 +1,5 @@
 {
-  "name": "fluxtask-web",
+  "name": "github-actions-web",
   "version": "1.0.0",
   "scripts": {
     "dev": "vite",

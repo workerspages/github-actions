@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_NAME: fluxtask
+  IMAGE_NAME: github-actions
   GHCR_REGISTRY: ghcr.io
 
 jobs:

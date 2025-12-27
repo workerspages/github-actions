@@ -28,7 +28,7 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/github-actions.db")
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
@@ -229,7 +229,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     # Step 1: Setup
     t0 = time.time()
-    setup_log = f"Runner: FluxTask-Universal\nRuntime: {runtime.upper()}\nTime: {datetime.now()}\n"
+    setup_log = f"Runner: GitHubActions-Universal\nRuntime: {runtime.upper()}\nTime: {datetime.now()}\n"
     
     delay = 0
     if override_delay >= 0: delay = override_delay
@@ -339,7 +339,7 @@ def add_job_to_scheduler(script: Script):
 # 6. API 路由
 # ==========================================
 
-app = FastAPI(title="FluxTask")
+app = FastAPI(title="GitHubActions")
 app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets")
 
 @app.on_event("startup")

@@ -4,7 +4,7 @@
 
 <div align="center">
 
-![Docker Image Size](https://img.shields.io/docker/image-size/ghcr.io/yourusername/fluxtask?color=blue&label=Docker%20Image)
+![Docker Image Size](https://img.shields.io/docker/image-size/ghcr.io/yourusername/github-actions?color=blue&label=Docker%20Image)
 ![Python](https://img.shields.io/badge/Backend-FastAPI-green)
 ![Vue](https://img.shields.io/badge/Frontend-Vue3%20%2B%20NaiveUI-purple)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
@@ -189,7 +189,7 @@ A: 这是因为 Docker 共享内存不足。请务必在 Python 脚本的 Chrome
 A: 系统默认已配置使用 **阿里云 PyPI 镜像源** 加速依赖安装，通常速度很快。
 
 **Q: 如何迁移数据？**
-A: 所有数据存储在映射的 `./data/fluxtask.db` (SQLite) 文件中。备份或迁移该文件即可。
+A: 所有数据存储在映射的 `./data/github-actions.db` (SQLite) 文件中。备份或迁移该文件即可。
 
 ---
 

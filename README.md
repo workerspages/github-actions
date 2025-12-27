@@ -1,6 +1,6 @@
 
 
-# FluxTask - 私有化定时任务调度平台
+# GitHub Actions - 私有化定时任务调度平台
 
 <div align="center">
 
@@ -18,9 +18,9 @@
 
 ## 📖 项目介绍
 
-**FluxTask** 是一个基于 Docker 部署的轻量级任务调度系统。它允许你在自己的服务器上运行 Python 脚本，完美解决了使用 GitHub Actions 等公共服务进行网站签到、爬虫任务时面临的 **IP 封锁** 问题。
+**GitHub Actions** 是一个基于 Docker 部署的轻量级任务调度系统。它允许你在自己的服务器上运行 Python 脚本，完美解决了使用 GitHub Actions 等公共服务进行网站签到、爬虫任务时面临的 **IP 封锁** 问题。
 
-不仅如此，FluxTask 还引入了 **“随机延时”** 机制，模拟真人操作时间，极大地提高了账号的安全性。
+不仅如此，GitHub Actions 还引入了 **“随机延时”** 机制，模拟真人操作时间，极大地提高了账号的安全性。
 
 ### ✨ 核心特性
 
@@ -106,7 +106,7 @@ print(f"当前 Cookie: {cookie}")
 > **如果出错**：删除脚本Python 代码 中的 `if os.getenv('GITHUB_ACTIONS'):`
 
 ### 3. Selenium 脚本示例
-FluxTask 完美支持 Selenium。在脚本中使用时，**必须**添加以下 Docker 兼容参数：
+GitHub Actions 完美支持 Selenium。在脚本中使用时，**必须**添加以下 Docker 兼容参数：
 
 ```python
 from selenium import webdriver
@@ -144,7 +144,7 @@ if __name__ == "__main__":
 
 ### 项目结构
 ```text
-FluxTask/
+GitHubActions/
 ├── backend/                # FastAPI 后端
 │   ├── app/
 │   │   ├── main.py         # 核心逻辑 (API, 调度, 数据库, 日志)

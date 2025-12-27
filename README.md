@@ -46,7 +46,7 @@ curl -fsSL https://get.docker.com | bash
 ```
 
 ### 2. 创建部署文件
-在服务器上创建一个目录（例如 `fluxtask`），并创建 `docker-compose.yml` 文件：
+在服务器上创建一个目录（例如 `github-actions`），并创建 `docker-compose.yml` 文件：
 
 ```yaml
 version: '3.8'

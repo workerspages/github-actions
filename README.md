@@ -52,22 +52,22 @@ curl -fsSL https://get.docker.com | bash
 version: '3.8'
 
 services:
-  fluxtask:
-    # 请替换为你构建的镜像地址，或者使用本地构建
-    # image: ghcr.io/你的用户名/fluxtask:latest
+  github-actions:
     image: yesyunxin/github-actions:latest
-    container_name: fluxtask
+    container_name: github-actions
     restart: unless-stopped
     ports:
-      - "8080:8000"  # 外部访问端口:容器内部端口
+      - "8080:8000"             # 外部访问端口:容器内部端口
     volumes:
       - ./data:/app/data        # 数据库持久化
       - ./scripts:/app/scripts  # 脚本文件持久化
     environment:
       - TZ=Asia/Shanghai
+
       # 自定义管理员密码 (建议修改)
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=admin
+
       # JWT 加密密钥 (生产环境请务必修改为长随机字符串)
       - JWT_SECRET=change_this_to_a_secure_random_string
 ```

@@ -59,7 +59,7 @@
                     <template #trigger>
                       <n-button size="small" secondary type="success">运行</n-button>
                     </template>
-                    确定要立即执行该脚本吗？这将忽略随机延时。
+                    确定要立即执行该脚本吗？<br>如果定义了新依赖，首次运行会自动安装(耗时较长)。
                   </n-popconfirm>
                   
                   <n-button size="small" secondary type="warning" @click="editScript(script)">编辑</n-button>
@@ -68,7 +68,7 @@
                     <template #trigger>
                       <n-button size="small" secondary type="error">删除</n-button>
                     </template>
-                    确定删除该任务？
+                    确定删除该任务及其虚拟环境？
                   </n-popconfirm>
                 </n-space>
               </template>
@@ -82,7 +82,7 @@
     </n-layout>
   </n-layout>
 
-  <!-- 编辑/新建 模态框 (UI 修复版) -->
+  <!-- 编辑/新建 模态框 -->
   <n-modal 
     v-model:show="showModal" 
     preset="card" 
@@ -114,15 +114,51 @@
           </n-form-item>
           <n-divider />
           <n-alert type="info" :show-icon="false" title="Tips">
-            <p>使用 <n-text code>os.environ['KEY']</n-text> 读取 Secrets。</p>
-            <p>使用 <n-text code>print()</n-text> 输出日志。</p>
+            <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
+            <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> 内容。</p>
           </n-alert>
         </n-form>
       </n-layout-sider>
 
-      <!-- 右侧：代码编辑器 (填满剩余空间) -->
+      <!-- 右侧：Tabs (代码 | 依赖) -->
       <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
-        <Editor v-model="form.code" style="flex: 1;" />
+        <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;">
+          <!-- Tab 1: 代码 -->
+          <n-tab-pane name="code" tab="Python 代码" style="height: 100%; padding: 0;">
+             <Editor v-model="form.code" style="height: 100%;" />
+          </n-tab-pane>
+          
+          <!-- Tab 2: 依赖 -->
+          <n-tab-pane name="requirements" tab="依赖 (Requirements.txt)" display-directive="show" style="height: 100%; padding: 0;">
+            <div style="height: 100%; display: flex; flex-direction: column;">
+              <div style="padding: 12px; background: #2d2d30; color: #aaa; font-size: 12px; border-bottom: 1px solid #333;">
+                <n-icon style="vertical-align: middle; margin-right: 5px;"><key-icon /></n-icon>
+                请输入依赖包名称，每行一个。例如：
+                <span style="color: #63e2b7; margin-left: 5px;">requests==2.31.0</span>
+                <span style="color: #63e2b7; margin-left: 10px;">selenium</span>
+                <span style="color: #63e2b7; margin-left: 10px;">lxml</span>
+              </div>
+              <textarea 
+                v-model="form.requirements" 
+                style="
+                  flex: 1; 
+                  width: 100%; 
+                  background: #1e1e1e; 
+                  color: #d4d4d4; 
+                  border: none; 
+                  padding: 15px; 
+                  font-family: 'Fira Code', 'Consolas', monospace; 
+                  font-size: 14px;
+                  line-height: 1.5;
+                  resize: none; 
+                  outline: none;
+                "
+                placeholder="# 在此处输入 requirements.txt 内容..."
+                spellcheck="false"
+              ></textarea>
+            </div>
+          </n-tab-pane>
+        </n-tabs>
       </n-layout-content>
     </n-layout>
 
@@ -141,7 +177,8 @@ import { useRouter } from 'vue-router'
 import { 
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NAvatar, 
   NButton, NSpace, NIcon, NGrid, NGridItem, NCard, NTag, NPopconfirm, 
-  NModal, NForm, NFormItem, NInput, NSlider, NText, NDivider, NAlert, NEmpty, useMessage 
+  NModal, NForm, NFormItem, NInput, NSlider, NText, NDivider, NAlert, NEmpty, useMessage,
+  NTabs, NTabPane
 } from 'naive-ui'
 import { 
   TimeOutline as TimeIcon, 
@@ -169,7 +206,8 @@ const form = ref({
   name: '',
   cron: '0 8 * * *',
   delay: 300,
-  code: 'import os\nimport time\n\nprint("Task started at " + time.ctime())\n# print(os.environ["MY_SECRET"])\nprint("Task finished!")'
+  code: '',
+  requirements: '' // 新增: 依赖字段
 })
 
 // 菜单配置
@@ -185,7 +223,7 @@ const handleMenuClick = (key) => {
 // 辅助函数
 const getStatusType = (status) => {
   if (status === 'Success') return 'success'
-  if (status === 'Failed' || status === 'Error') return 'error'
+  if (status === 'Failed' || status === 'Error' || status === 'Dep Error') return 'error'
   return 'default'
 }
 
@@ -204,7 +242,7 @@ const fetchScripts = async () => {
 const runScript = async (id) => {
   try {
     await axios.post(`/api/scripts/${id}/run`, {}, { headers: { Authorization: `Bearer ${getToken()}` } })
-    message.success('指令已发送，后台运行中')
+    message.success('指令已发送，后台运行中 (首次运行需安装依赖)')
   } catch(e) { message.error('运行失败') }
 }
 
@@ -218,7 +256,13 @@ const deleteScript = async (id) => {
 
 const openCreateModal = () => {
   isEdit.value = false
-  form.value = { name: '', cron: '0 8 * * *', delay: 300, code: 'import os\nimport time\nfrom loguru import logger\n\nlogger.info("Task Start...")\n' }
+  form.value = { 
+    name: '', 
+    cron: '0 8 * * *', 
+    delay: 300, 
+    code: 'import os\nimport time\nfrom loguru import logger\n\nlogger.info("Task Start...")\n',
+    requirements: ''
+  }
   showModal.value = true
 }
 
@@ -229,7 +273,8 @@ const editScript = (script) => {
     name: script.name, 
     cron: script.cron_exp, 
     delay: script.random_delay, 
-    code: script.code 
+    code: script.code,
+    requirements: script.requirements || '' // 回显依赖
   }
   showModal.value = true
 }
@@ -242,13 +287,15 @@ const saveData = async () => {
       name: form.value.name,
       cron: form.value.cron,
       delay: form.value.delay,
-      code: form.value.code
+      code: form.value.code,
+      requirements: form.value.requirements // 提交依赖
     }
+    const headers = { Authorization: `Bearer ${getToken()}` }
     
     if (isEdit.value) {
-      await axios.put(`/api/scripts/${currentId.value}`, payload, { headers: { Authorization: `Bearer ${getToken()}` } })
+      await axios.put(`/api/scripts/${currentId.value}`, payload, { headers })
     } else {
-      await axios.post('/api/scripts', payload, { headers: { Authorization: `Bearer ${getToken()}` } })
+      await axios.post('/api/scripts', payload, { headers })
     }
     
     message.success('保存成功')

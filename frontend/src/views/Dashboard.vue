@@ -82,18 +82,31 @@
     </n-layout>
   </n-layout>
 
-  <!-- 编辑/新建 模态框 (全屏感) -->
-  <n-modal v-model:show="showModal" preset="card" style="width: 90vw; height: 90vh; max-width: 1400px;" :title="isEdit ? '编辑脚本' : '新建脚本'">
+  <!-- 编辑/新建 模态框 (UI 修复版) -->
+  <n-modal 
+    v-model:show="showModal" 
+    preset="card" 
+    :title="isEdit ? '编辑脚本' : '新建脚本'"
+    style="width: 90vw; height: 90vh; max-width: 1400px;"
+    :bordered="true"
+    :segmented="{ content: 'soft', footer: 'soft' }"
+    content-style="padding: 0; overflow: hidden;"
+  >
     <n-layout has-sider style="height: 100%">
-      <!-- 左侧：设置 -->
-      <n-layout-sider width="300" content-style="padding-right: 20px;">
+      <!-- 左侧：设置 (允许独立滚动) -->
+      <n-layout-sider 
+        width="320" 
+        bordered 
+        content-style="padding: 24px;" 
+        :native-scrollbar="false"
+      >
         <n-form label-placement="top">
           <n-form-item label="任务名称">
             <n-input v-model:value="form.name" placeholder="例如: 京东签到" />
           </n-form-item>
           <n-form-item label="Cron 表达式">
             <n-input v-model:value="form.cron" placeholder="0 8 * * *" />
-            <n-text depth="3" style="font-size: 12px;">分 时 日 月 周</n-text>
+            <n-text depth="3" style="font-size: 12px;">格式: 分 时 日 月 周</n-text>
           </n-form-item>
           <n-form-item :label="`随机延时: ${form.delay} 秒`">
             <n-slider v-model:value="form.delay" :max="1800" :step="10" />
@@ -101,15 +114,15 @@
           </n-form-item>
           <n-divider />
           <n-alert type="info" :show-icon="false" title="Tips">
-            使用 <n-text code>os.environ['KEY']</n-text> 读取 Secrets。
+            <p>使用 <n-text code>os.environ['KEY']</n-text> 读取 Secrets。</p>
+            <p>使用 <n-text code>print()</n-text> 输出日志。</p>
           </n-alert>
         </n-form>
       </n-layout-sider>
 
-      <!-- 右侧：代码编辑器 -->
-      <n-layout-content>
-        <!-- 引入之前的 Editor 组件 -->
-        <Editor v-model="form.code" />
+      <!-- 右侧：代码编辑器 (填满剩余空间) -->
+      <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
+        <Editor v-model="form.code" style="flex: 1;" />
       </n-layout-content>
     </n-layout>
 
@@ -139,7 +152,7 @@ import {
   Key as KeyIcon
 } from '@vicons/ionicons5'
 import axios from 'axios'
-import Editor from '../components/Editor.vue' // 引入组件
+import Editor from '../components/Editor.vue'
 
 const router = useRouter()
 const message = useMessage()
@@ -205,7 +218,7 @@ const deleteScript = async (id) => {
 
 const openCreateModal = () => {
   isEdit.value = false
-  form.value = { name: '', cron: '0 8 * * *', delay: 300, code: 'import os\n\nprint("Hello FluxTask")' }
+  form.value = { name: '', cron: '0 8 * * *', delay: 300, code: 'import os\nimport time\nfrom loguru import logger\n\nlogger.info("Task Start...")\n' }
   showModal.value = true
 }
 
@@ -227,7 +240,7 @@ const saveData = async () => {
   try {
     const payload = {
       name: form.value.name,
-      cron: form.value.cron, // 后端需注意字段名匹配
+      cron: form.value.cron,
       delay: form.value.delay,
       code: form.value.code
     }

@@ -174,7 +174,7 @@ cd frontend
 npm install
 npm run dev
 # 访问 http://localhost:5173 (需配置 vite.config.js 代理到后端)
-
+```
 
 ---
 
@@ -190,23 +190,6 @@ A: 系统默认已配置使用 **阿里云 PyPI 镜像源** 加速依赖安装�
 A: 所有数据存储在映射的 `./data/fluxtask.db` (SQLite) 文件中。备份或迁移该文件即可。
 
 ---
-
-## 📄 开源协议
-
-本项目采用 [MIT License](LICENSE) 开源。欢迎 Star 和 Fork！
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 ### 🛠️ 必须要做的修改 (Python 脚本)
 
@@ -239,3 +222,7 @@ def setup_driver(self):
         # 初始化驱动
         self.driver = webdriver.Chrome(options=chrome_options)
 ```
+
+## 📄 开源协议
+
+本项目采用 [MIT License](LICENSE) 开源。欢迎 Star 和 Fork！

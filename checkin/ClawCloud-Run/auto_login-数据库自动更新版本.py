@@ -162,7 +162,7 @@ class AutoLogin:
         if not value: return
         self.log(f"捕获新 Cookie: {value[:10]}...", "SUCCESS")
         if self.secret.update('GH_SESSION', value):
-            self.log("✅ 数据库已自动更新", "SUCCESS")
+            self.log("数据库已自动更新", "SUCCESS")
             self.tg.send("🔑 <b>Cookie 已自动更新到面板</b>\n无需手动操作。")
         else:
             self.log("⚠️ 自动更新失败，发送到 TG", "WARN")

@@ -1,0 +1,25 @@
+# --- 排除 checkin 文件夹 ---
+checkin/
+checkin
+
+# --- 排除 Git 版本控制文件 ---
+.git
+.github
+.gitignore
+
+# --- 排除本地开发环境和缓存 ---
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+node_modules/
+npm-debug.log
+.DS_Store
+
+# --- 排除文档和配置 ---
+README.md
+docker-compose.yml

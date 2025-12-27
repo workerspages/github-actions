@@ -2,7 +2,7 @@ name: Build and Publish
 
 on:
   push:
-    branches: [ "callback-api" ]
+    branches: [ "github-actions" ]
   workflow_dispatch:
 
 env:

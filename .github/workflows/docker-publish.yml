@@ -46,6 +46,7 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha,format=short
+            type=ref,event=branch
 
       # 4. 构建并推送
       - name: Build and push Docker image

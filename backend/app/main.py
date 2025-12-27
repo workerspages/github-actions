@@ -3,7 +3,6 @@ import random
 import asyncio
 import subprocess
 import secrets
-import shlex
 from datetime import datetime, timedelta
 from typing import List, Optional
 
@@ -27,7 +26,7 @@ from loguru import logger
 
 # 数据库配置
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
-# JWT 配置 (生产环境请务必修改 JWT_SECRET)
+# JWT 配置 (生产环境请在 Docker 环境变量中设置 JWT_SECRET)
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # Token 有效期 7 天
@@ -106,7 +105,7 @@ class SecretCreate(BaseModel):
 class SecretResponse(BaseModel):
     id: int
     key: str
-    # 不返回 value
+    # 不返回 value 以保护隐私
     
     class Config:
         # Pydantic V2 适配
@@ -178,8 +177,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
             await asyncio.sleep(delay)
 
         # 2. 准备代码文件
-        # 为了避免文件名冲突或特殊字符，可以使用ID作为文件名
-        # 移除了 shlex.quote，直接使用文件名
+        # 为了避免文件名冲突，使用简单的清理逻辑
         safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
         file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
         
@@ -197,8 +195,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
         logger.info(f"Executing script: {script.name}")
         
-        # 5. 执行子进程
-        # 使用 subprocess 执行隔离的 python 进程
+        # 5. 执行子进程 (subprocess)
         process = await asyncio.create_subprocess_exec(
             "python3", file_path,
             env=env_vars,
@@ -221,13 +218,10 @@ async def run_script_task(script_id: int, override_delay: int = -1):
             script.last_status = "Failed"
             logger.error(f"Task [{script.name}] Failed.\nError: {stderr_str}\nOutput: {stdout_str}")
         
-        # 可以在这里扩展：将 stdout_str 保存到数据库的 'logs' 表中
-
         db.commit()
 
     except Exception as e:
         logger.error(f"System Error running task {script_id}: {e}")
-        # 如果 db session 还在，尝试记录错误状态
         try:
             if 'script' in locals() and script:
                 script.last_status = "Error"
@@ -295,13 +289,16 @@ def startup_event():
     # 2. 初始化数据库和任务
     db = SessionLocal()
     
-    # 检查默认管理员
-    admin = db.query(User).filter(User.username == "admin").first()
-    if not admin:
-        hashed = pwd_context.hash("admin") # 默认密码 admin
-        db.add(User(username="admin", hashed_password=hashed))
+    # --- 初始化管理员账户 (支持环境变量配置) ---
+    default_user = os.getenv("ADMIN_USER", "admin")
+    default_pass = os.getenv("ADMIN_PASSWORD", "admin")
+    
+    existing_user = db.query(User).filter(User.username == default_user).first()
+    if not existing_user:
+        hashed = pwd_context.hash(default_pass)
+        db.add(User(username=default_user, hashed_password=hashed))
         db.commit()
-        logger.info("Created default admin user.")
+        logger.info(f"Created default admin user: {default_user}")
     
     # 加载所有脚本到调度器
     scripts = db.query(Script).filter(Script.is_active == True).all()

@@ -4,7 +4,7 @@ import asyncio
 import subprocess
 import secrets
 import shlex
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import FastAPI, Depends, HTTPException, status, Body
@@ -96,7 +96,8 @@ class ScriptResponse(ScriptBase):
     last_status: Optional[str] = None
     
     class Config:
-        orm_mode = True
+        # Pydantic V2 适配
+        from_attributes = True
 
 class SecretCreate(BaseModel):
     key: str
@@ -108,7 +109,8 @@ class SecretResponse(BaseModel):
     # 不返回 value
     
     class Config:
-        orm_mode = True
+        # Pydantic V2 适配
+        from_attributes = True
 
 # ==========================================
 # 4. 辅助函数 (Utils & Auth)
@@ -176,8 +178,8 @@ async def run_script_task(script_id: int, override_delay: int = -1):
             await asyncio.sleep(delay)
 
         # 2. 准备代码文件
-        # 为了避免文件名冲突或特殊字符，可以使用ID作为文件名，但为了可读性这里用name
-        # 实际生产中建议用 hash 或 id
+        # 为了避免文件名冲突或特殊字符，可以使用ID作为文件名
+        # 移除了 shlex.quote，直接使用文件名
         safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
         file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
         
@@ -225,9 +227,13 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     except Exception as e:
         logger.error(f"System Error running task {script_id}: {e}")
-        if 'script' in locals() and script:
-            script.last_status = "Error"
-            db.commit()
+        # 如果 db session 还在，尝试记录错误状态
+        try:
+            if 'script' in locals() and script:
+                script.last_status = "Error"
+                db.commit()
+        except:
+            pass
     finally:
         db.close()
 
@@ -305,7 +311,6 @@ def startup_event():
     db.close()
 
 # --- 登录接口 ---
-from datetime import timedelta
 
 @app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -384,10 +389,6 @@ def delete_script(script_id: int, user: User = Depends(get_current_user), db: Se
     except:
         pass
     
-    # 删除文件 (可选)
-    # safe_name = ...
-    # if os.path.exists(path): os.remove(path)
-
     db.delete(script)
     db.commit()
     return {"status": "deleted"}

@@ -102,7 +102,7 @@
             <n-input v-model:value="form.name" placeholder="例如: 京东签到" />
           </n-form-item>
           <n-form-item label="Cron 表达式">
-            <n-input v-model:value="form.cron" placeholder="0 8 * * *" />
+            <n-input v-model:value="form.cron" placeholder="10 9 * * *" />
             <n-text depth="3" style="font-size: 12px;">格式: 分 时 日 月 周</n-text>
           </n-form-item>
           <n-form-item :label="`随机延时: ${form.delay} 秒`">
@@ -110,9 +110,10 @@
             <n-text depth="3" style="font-size: 12px;">防止被识别为机器人，建议 > 60s</n-text>
           </n-form-item>
           <n-divider />
-          <n-alert type="info" :show-icon="false" title="Tips">
+          <n-alert type="info" :show-icon="false" title="提示">
             <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
             <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> 内容。</p>
+            <p>如果出错：删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
           </n-alert>
         </n-form>
       </n-layout-sider>

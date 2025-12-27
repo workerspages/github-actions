@@ -2,7 +2,7 @@
   <n-layout has-sider style="height: 100vh">
     <!-- 侧边栏 -->
     <n-layout-sider bordered width="220" content-style="padding: 24px;" style="background-color: #18181c;">
-      <div class="logo">FluxTask</div>
+      <div class="logo">GitHub Actions</div>
       <n-menu :options="menuOptions" :value="activeMenu" @update:value="handleMenuClick" />
       <div class="user-info">
         <n-avatar round size="small" src="https://avatars.githubusercontent.com/u/1?v=4" />

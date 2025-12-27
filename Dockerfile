@@ -7,7 +7,7 @@ RUN npm install
 COPY frontend/ .
 RUN npm run build
 
-# --- Stage 2: 后端运行 (全能环境：Ubuntu + Python + Node + Playwright Native) ---
+# --- Stage 2: 后端运行 (全能环境) ---
 FROM ubuntu:22.04
 
 # 1. 基础环境变量
@@ -15,11 +15,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Asia/Shanghai
 ENV PYTHONUNBUFFERED=1
 ENV LANG=C.UTF-8
+# 确保本地 bin 目录在 PATH 中 (防止 pip 安装后找不到命令)
+ENV PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 
 WORKDIR /app
 
 # 2. 安装基础工具 + Python + Node.js
-# 注意：我们这里不需要手动安装 libnss3 等一大堆库了，后面交给 playwright install --with-deps 自动处理
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl gnupg2 ca-certificates software-properties-common \
     git tzdata unzip zip jq build-essential \
@@ -33,15 +34,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -s /usr/bin/python3 /usr/bin/python \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# 3. 安装 Python 依赖 (包含 playwright)
+# 3. 安装 Python 依赖
 COPY backend/requirements.txt .
-# 使用清华源加速 pip
+
+# === 关键修改 ===
+# 1. 升级 pip
+# 2. 显式安装 playwright 库 (解决 127 错误)
+# 3. 安装 requirements.txt
 RUN pip3 install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip3 install --no-cache-dir playwright -i https://pypi.tuna.tsinghua.edu.cn/simple && \
     pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 4. 【核心步骤】安装 Playwright 浏览器内核及系统依赖
-# 这一步会下载 Chromium, Firefox, WebKit 并安装所有需要的 .so 库
-# --with-deps: 自动安装系统依赖 (apt-get)
+# 现在 playwright 命令一定存在了
 RUN playwright install --with-deps
 
 # 5. 复制程序代码

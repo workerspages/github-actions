@@ -6,13 +6,16 @@ services:
     container_name: github-actions
     restart: unless-stopped
     ports:
-      - "8086:8000" # 访问 http://ip:8080
+      - "8080:8000"             # 外部访问端口:容器内部端口
     volumes:
       - ./data:/app/data        # 数据库持久化
-      - ./scripts:/app/scripts  # 脚本文件持久化 (可选，方便debug)
+      - ./scripts:/app/scripts  # 脚本文件持久化
     environment:
+      - TZ=Asia/Shanghai
+
+      # 自定义管理员密码 (建议修改)
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=admin
-      - TZ=Asia/Shanghai
-      - JWT_SECRET=change_this_to_a_long_random_string
-      - MAX_WORKERS=5 # 如果你需要并发控制
+
+      # JWT 加密密钥 (生产环境请务必修改为长随机字符串)
+      - JWT_SECRET=change_this_to_a_secure_random_string

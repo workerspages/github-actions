@@ -59,7 +59,7 @@
                     <template #trigger>
                       <n-button size="small" secondary type="success">运行</n-button>
                     </template>
-                    确定要立即执行该脚本吗？<br>如果定义了新依赖，首次运行会自动安装(耗时较长)。
+                    确定要立即执行该脚本吗？<br>如果定义了新依赖，首次运行会自动安装。
                   </n-popconfirm>
                   
                   <n-button size="small" secondary type="warning" @click="editScript(script)">编辑</n-button>
@@ -136,7 +136,6 @@
                 请输入依赖包名称，每行一个。例如：
                 <span style="color: #63e2b7; margin-left: 5px;">requests==2.31.0</span>
                 <span style="color: #63e2b7; margin-left: 10px;">selenium</span>
-                <span style="color: #63e2b7; margin-left: 10px;">lxml</span>
               </div>
               <textarea 
                 v-model="form.requirements" 
@@ -207,7 +206,7 @@ const form = ref({
   cron: '0 8 * * *',
   delay: 300,
   code: '',
-  requirements: '' // 新增: 依赖字段
+  requirements: '' 
 })
 
 // 菜单配置
@@ -242,7 +241,7 @@ const fetchScripts = async () => {
 const runScript = async (id) => {
   try {
     await axios.post(`/api/scripts/${id}/run`, {}, { headers: { Authorization: `Bearer ${getToken()}` } })
-    message.success('指令已发送，后台运行中 (首次运行需安装依赖)')
+    message.success('指令已发送，后台运行中')
   } catch(e) { message.error('运行失败') }
 }
 
@@ -274,7 +273,7 @@ const editScript = (script) => {
     cron: script.cron_exp, 
     delay: script.random_delay, 
     code: script.code,
-    requirements: script.requirements || '' // 回显依赖
+    requirements: script.requirements || ''
   }
   showModal.value = true
 }
@@ -288,7 +287,7 @@ const saveData = async () => {
       cron: form.value.cron,
       delay: form.value.delay,
       code: form.value.code,
-      requirements: form.value.requirements // 提交依赖
+      requirements: form.value.requirements
     }
     const headers = { Authorization: `Bearer ${getToken()}` }
     
@@ -367,5 +366,21 @@ onMounted(fetchScripts)
   left: 24px;
   display: flex;
   align-items: center;
+}
+
+/* --- 关键修复：强制 Tabs 撑满高度，防止内容塌陷 --- */
+:deep(.n-tabs) {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+:deep(.n-tabs .n-tabs-pane-wrapper) {
+  flex: 1; /* 让 Pane 包装器撑满剩余空间 */
+  overflow: hidden;
+}
+:deep(.n-tab-pane) {
+  height: 100%; /* 让具体 Pane 撑满包装器 */
+  display: flex;
+  flex-direction: column;
 }
 </style>

@@ -16,3 +16,17 @@
 
 ```bash
 docker-compose up -d
+
+
+
+### 🛠️ 必须要做的修改 (Python 脚本)
+
+在 GitHub Actions 中，有时即便不加某些参数也能跑，但在 Docker 容器内，**必须**加上以下参数，否则 Chrome 进程会崩溃：
+
+在你的脚本 `setup_driver` 部分，确保有这三行：
+
+```python
+chrome_options.add_argument('--headless')           # 无头模式 (Docker 没有显示器)
+chrome_options.add_argument('--no-sandbox')         # 禁止沙盒 (Root用户运行必须加)
+chrome_options.add_argument('--disable-dev-shm-usage') # 解决 Docker 内存共享问题
+```

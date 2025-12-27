@@ -19,7 +19,7 @@
 
 ## 📖 项目介绍
 
-**FluxTask** 是一个基于 Docker 的任务调度系统，它解决了公共 CI/CD 服务（如 GitHub Actions）IP 地址容易被风控的问题。
+**GitHub Actions** 是一个基于 Docker 的任务调度系统，它解决了公共 CI/CD 服务（如 GitHub Actions）IP 地址容易被风控的问题。
 
 与传统的轻量级 Cron 容器不同，FluxTask 采用 **“全能型” (All-in-One)** 架构。它基于 Ubuntu 22.04 构建，预装了现代自动化所需的一切环境，让你可以像在本地电脑或 GitHub Actions 虚拟机中一样，无缝运行复杂的浏览器自动化脚本。
 
@@ -47,26 +47,24 @@
 version: '3.8'
 
 services:
-  fluxtask:
-    # 替换为你构建的镜像地址
-    image: ghcr.io/yourusername/fluxtask:latest
-    container_name: fluxtask
+  github-actions:
+    image: ghcr.io/workerspages/github-actions:github-actions
+    container_name: github-actions
     restart: unless-stopped
     ports:
-      - "8080:8000"  # 访问端口
+      - "8000:8000"             # 外部访问端口:容器内部端口
     volumes:
-      # ⚠️ 重要：必须挂载数据目录，否则重启后数据丢失！
-      - ./data:/app/data        # 数据库、虚拟环境、依赖缓存
-      - ./scripts:/app/scripts  # 脚本文件
+      - ./data:/app/data        # 数据库持久化
+      - ./scripts:/app/scripts  # 脚本文件持久化
     environment:
       - TZ=Asia/Shanghai
-      # 数据库文件路径 (建议保持默认)
-      - DATABASE_URL=sqlite:////app/data/fluxtask.db
-      # 自定义管理员账号
+
+      # 自定义管理员密码 (建议修改)
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=admin
-      # JWT 密钥 (生产环境请修改)
-      - JWT_SECRET=change_this_to_a_long_random_string
+
+      # JWT 加密密钥 (生产环境请务必修改为长随机字符串)
+      - JWT_SECRET=change_this_to_a_secure_random_string
 ```
 
 ### 3. 启动服务
@@ -80,7 +78,7 @@ docker-compose up -d
 
 ## 💻 脚本编写指南
 
-FluxTask 支持两种语言模式，系统会自动根据代码特征识别。
+GitHub Actions 支持两种语言模式，系统会自动根据代码特征识别。
 
 ### 🐍 模式 A: Python (默认)
 
@@ -171,7 +169,7 @@ driver = webdriver.Chrome(options=options)
 
 ## 🔐 进阶：脚本自动更新 Secrets
 
-FluxTask 允许脚本反向更新面板的 Secrets（例如：自动过验证码后更新 Cookie）。系统会在脚本运行时自动注入 `FLUX_API_URL` 和 `FLUX_TOKEN`。
+GitHub Actions 允许脚本反向更新面板的 Secrets（例如：自动过验证码后更新 Cookie）。系统会在脚本运行时自动注入 `FLUX_API_URL` 和 `FLUX_TOKEN`。
 
 **Python 示例：**
 

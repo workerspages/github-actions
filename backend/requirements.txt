@@ -7,3 +7,4 @@ python-jose[cryptography]
 apscheduler
 loguru
 requests
+python-multipart

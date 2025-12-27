@@ -9,4 +9,3 @@ apscheduler
 loguru
 requests
 python-multipart
-playwright

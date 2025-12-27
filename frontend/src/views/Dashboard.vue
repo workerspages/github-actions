@@ -2,7 +2,7 @@
   <n-layout has-sider style="height: 100vh">
     <!-- 侧边栏 -->
     <n-layout-sider bordered width="220" content-style="padding: 24px;" style="background-color: #18181c;">
-      <div class="logo">GitHub Actions</div>
+      <div class="logo">FluxTask</div>
       <n-menu :options="menuOptions" :value="activeMenu" @update:value="handleMenuClick" />
       <div class="user-info">
         <n-avatar round size="small" src="https://avatars.githubusercontent.com/u/1?v=4" />
@@ -11,6 +11,7 @@
     </n-layout-sider>
 
     <n-layout>
+      <!-- 顶部 Header -->
       <n-layout-header bordered class="header">
         <div class="header-title">任务列表</div>
         <n-space>
@@ -24,6 +25,7 @@
         </n-space>
       </n-layout-header>
 
+      <!-- 内容区域 -->
       <n-layout-content class="content-bg" content-style="padding: 24px;">
         <n-grid :x-gap="24" :y-gap="24" cols="1 800:2 1200:3 1600:4">
           <n-grid-item v-for="script in scripts" :key="script.id">
@@ -40,12 +42,10 @@
               <div class="card-body">
                 <div class="info-row">
                   <n-icon><time-icon /></n-icon>
-                  <!-- 修复：后端返回的是 cron_exp，但 Pydantic 映射为了 cron，这里统一用 cron -->
                   <span>{{ script.cron || script.cron_exp }}</span>
                 </div>
                 <div class="info-row">
                   <n-icon><hourglass-icon /></n-icon>
-                  <!-- 修复：显示随机延时 -->
                   <span>延迟: 0~{{ script.delay || script.random_delay }}s</span>
                 </div>
                 <div class="info-row" style="margin-top: 10px; font-size: 12px; color: #666;">
@@ -96,13 +96,19 @@
     content-style="padding: 0; overflow: hidden;"
   >
     <n-layout has-sider style="height: 100%">
-      <n-layout-sider width="320" bordered content-style="padding: 24px;" :native-scrollbar="false">
+      <!-- 左侧：设置 -->
+      <n-layout-sider 
+        width="320" 
+        bordered 
+        content-style="padding: 24px;" 
+        :native-scrollbar="false"
+      >
         <n-form label-placement="top">
           <n-form-item label="任务名称">
             <n-input v-model:value="form.name" placeholder="例如: 京东签到" />
           </n-form-item>
           <n-form-item label="Cron 表达式">
-            <n-input v-model:value="form.cron" placeholder="10 9 * * *" />
+            <n-input v-model:value="form.cron" placeholder="0 8 * * *" />
             <n-text depth="3" style="font-size: 12px;">格式: 分 时 日 月 周</n-text>
           </n-form-item>
           <n-form-item :label="`随机延时: ${form.delay} 秒`">
@@ -110,19 +116,26 @@
             <n-text depth="3" style="font-size: 12px;">防止被识别为机器人，建议 > 60s</n-text>
           </n-form-item>
           <n-divider />
+          
+          <!-- 更新后的提示信息 -->
           <n-alert type="info" :show-icon="false" title="提示">
             <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
             <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> 内容。</p>
-            <p>如果出错：删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
+            <p>如果出错: 删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
           </n-alert>
+
         </n-form>
       </n-layout-sider>
 
+      <!-- 右侧：Tabs (代码 | 依赖) -->
       <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
         <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;">
+          <!-- Tab 1: 代码 -->
           <n-tab-pane name="code" tab="Python 代码" style="height: 100%; padding: 0;">
              <Editor v-model="form.code" style="height: 100%;" />
           </n-tab-pane>
+          
+          <!-- Tab 2: 依赖 -->
           <n-tab-pane name="requirements" tab="依赖 (Requirements.txt)" display-directive="show" style="height: 100%; padding: 0;">
             <div style="height: 100%; display: flex; flex-direction: column;">
               <div style="padding: 12px; background: #2d2d30; color: #aaa; font-size: 12px; border-bottom: 1px solid #333;">
@@ -131,7 +144,19 @@
               </div>
               <textarea 
                 v-model="form.requirements" 
-                style="flex: 1; width: 100%; background: #1e1e1e; color: #d4d4d4; border: none; padding: 15px; font-family: 'Fira Code', monospace; font-size: 14px; resize: none; outline: none;"
+                style="
+                  flex: 1; 
+                  width: 100%; 
+                  background: #1e1e1e; 
+                  color: #d4d4d4; 
+                  border: none; 
+                  padding: 15px; 
+                  font-family: 'Fira Code', 'Consolas', monospace; 
+                  font-size: 14px;
+                  line-height: 1.5;
+                  resize: none; 
+                  outline: none;
+                "
                 placeholder="# 在此处输入 requirements.txt 内容..."
                 spellcheck="false"
               ></textarea>
@@ -158,9 +183,11 @@
       
       <div v-if="logSteps.length > 0" class="log-container">
         <div v-for="(step, index) in logSteps" :key="index" class="log-step">
+          <!-- 步骤标题栏 -->
           <div class="log-step-header" @click="step.expanded = !step.expanded">
             <div class="step-left">
               <n-icon class="arrow-icon" :class="{ expanded: step.expanded }"><chevron-forward-icon /></n-icon>
+              <!-- 状态图标 -->
               <n-icon v-if="step.status === 0" color="#238636" size="18"><checkmark-circle-icon /></n-icon>
               <n-icon v-else-if="step.status === 1" color="#f85149" size="18"><close-circle-icon /></n-icon>
               <n-icon v-else-if="step.status === 2" color="#dbab09" size="18"><ellipse-icon /></n-icon>
@@ -169,6 +196,8 @@
             </div>
             <span class="step-duration">{{ step.duration }}</span>
           </div>
+          
+          <!-- 步骤详细日志 -->
           <div v-if="step.expanded" class="log-step-body">
             <div v-for="(line, idx) in step.output.split('\n')" :key="idx" class="log-line">
               <span class="line-num">{{ idx + 1 }}</span>
@@ -177,6 +206,7 @@
           </div>
         </div>
       </div>
+      
       <n-empty v-else description="暂无日志" style="margin-top: 100px; color: #8b949e" />
     </n-drawer-content>
   </n-drawer>
@@ -238,7 +268,6 @@ const fetchScripts = async () => {
   try {
     const res = await axios.get('/api/scripts', { headers: { Authorization: `Bearer ${getToken()}` } })
     scripts.value = res.data
-    // 如果抽屉打开，更新日志
     if (showLogDrawer.value && currentLogScript.value) {
       const updated = scripts.value.find(s => s.id === currentLogScript.value.id)
       if (updated) openLogDrawer(updated)
@@ -294,15 +323,12 @@ const openCreateModal = () => {
   showModal.value = true
 }
 
-// --- 关键修复：正确回显 Cron 和 Delay ---
 const editScript = (script) => {
   isEdit.value = true
   currentId.value = script.id
   form.value = { 
     name: script.name, 
-    // 后端返回可能是 cron 或 cron_exp，优先取 API 响应模型中的 cron
     cron: script.cron || script.cron_exp, 
-    // 同理，取 delay
     delay: script.delay !== undefined ? script.delay : script.random_delay, 
     code: script.code,
     requirements: script.requirements || ''

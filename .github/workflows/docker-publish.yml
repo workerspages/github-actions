@@ -45,7 +45,7 @@ jobs:
             ${{ env.GHCR_REGISTRY }}/${{ github.repository }}
           tags: |
             type=raw,value=latest
-            type=sha,format=long
+            type=sha,format=short
 
       # 4. 构建并推送
       - name: Build and push Docker image

@@ -26,26 +26,32 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
+# 数据库配置
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
+# JWT 配置
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7  # 7天
 
 # 目录配置
 SCRIPTS_DIR = "/app/scripts"
-VENVS_DIR = "/app/data/venvs"  # 虚拟环境存放目录
+VENVS_DIR = "/app/data/venvs"  # 虚拟环境目录
 STATIC_DIR = "/app/static"
 
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
 os.makedirs(VENVS_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
+# 数据库引擎
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# 认证工具
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+# 调度器
 scheduler = AsyncIOScheduler()
 
 # ==========================================
@@ -62,14 +68,13 @@ class Script(Base):
     __tablename__ = "scripts"
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    code = Column(Text)
-    # 新增：依赖列表文本
-    requirements = Column(Text, default="") 
-    cron_exp = Column(String)
+    code = Column(Text)              # Python 代码
+    requirements = Column(Text, default="") # 依赖列表 (requirements.txt 内容)
+    cron_exp = Column(String)        # Cron 表达式
     random_delay = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
     last_run = Column(String, nullable=True)
-    last_status = Column(String, nullable=True)
+    last_status = Column(String, nullable=True) # Success / Failed / Error / Dep Error
 
 class Secret(Base):
     __tablename__ = "secrets"
@@ -77,6 +82,7 @@ class Secret(Base):
     key = Column(String, unique=True, index=True)
     value = Column(String)
 
+# 创建表结构
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
@@ -86,7 +92,7 @@ Base.metadata.create_all(bind=engine)
 class ScriptBase(BaseModel):
     name: str
     code: str
-    requirements: Optional[str] = "" # 新增
+    requirements: Optional[str] = "" # 新增字段
     cron: str
     delay: int = 0
 
@@ -94,6 +100,7 @@ class ScriptResponse(ScriptBase):
     id: int
     last_run: Optional[str] = None
     last_status: Optional[str] = None
+    
     class Config:
         from_attributes = True
 
@@ -104,6 +111,7 @@ class SecretCreate(BaseModel):
 class SecretResponse(BaseModel):
     id: int
     key: str
+    
     class Config:
         from_attributes = True
 
@@ -131,6 +139,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         if username is None: raise HTTPException(status_code=401)
     except JWTError:
         raise HTTPException(status_code=401)
+    
     user = db.query(User).filter(User.username == username).first()
     if user is None: raise HTTPException(status_code=401)
     return user
@@ -139,83 +148,94 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 # 5. 核心逻辑：虚拟环境与执行
 # ==========================================
 
-async def prepare_venv(script_id: int, requirements: str):
+async def prepare_venv(script_id: int, requirements: str) -> str:
     """
-    为脚本准备虚拟环境并安装依赖
+    为脚本创建/更新虚拟环境，并返回该环境的 python 可执行文件路径。
     """
     venv_path = os.path.join(VENVS_DIR, str(script_id))
-    pip_cmd = os.path.join(venv_path, "bin", "pip")
-    python_cmd = os.path.join(venv_path, "bin", "python")
+    # venv 结构中，bin/python 是可执行文件 (Linux)
+    python_exec = os.path.join(venv_path, "bin", "python")
+    pip_exec = os.path.join(venv_path, "bin", "pip")
 
-    # 1. 如果没有虚拟环境，创建它
-    if not os.path.exists(python_cmd):
+    # 1. 检查虚拟环境是否存在，不存在则创建
+    if not os.path.exists(python_exec):
         logger.info(f"Creating venv for script {script_id}...")
+        # 使用当前系统的 python 创建 venv
         subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
-
-    # 2. 如果有依赖，安装它们
+    
+    # 2. 安装依赖
     if requirements and requirements.strip():
-        # 将依赖写入临时文件
+        # 写入临时 requirements.txt
         req_file = os.path.join(venv_path, "requirements.txt")
         with open(req_file, "w") as f:
             f.write(requirements)
         
         logger.info(f"Installing dependencies for script {script_id}...")
-        # 使用 subprocess 调用 pip 安装，捕获输出
-        # 使用阿里云源加速
+        # 调用 venv 里的 pip 安装
+        # 使用阿里云镜像加速
         cmd = [
-            pip_cmd, "install", "-r", req_file, 
+            pip_exec, "install", "-r", req_file,
             "-i", "https://mirrors.aliyun.com/pypi/simple/"
         ]
+        
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        await proc.communicate()
-
-    return python_cmd
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode != 0:
+            logger.error(f"Pip install failed: {stderr.decode()}")
+            raise Exception(f"Dependency installation failed: {stderr.decode()}")
+            
+    return python_exec
 
 async def run_script_task(script_id: int, override_delay: int = -1):
+    """执行脚本任务"""
     db = SessionLocal()
     try:
         script = db.query(Script).filter(Script.id == script_id).first()
         if not script: return
 
-        # 1. 延时逻辑
+        # 1. 随机延时
         delay = 0
-        if override_delay >= 0: delay = override_delay
-        elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
+        if override_delay >= 0:
+            delay = override_delay
+        elif script.random_delay > 0:
+            delay = random.randint(0, script.random_delay)
         
         if delay > 0:
             logger.info(f"Task [{script.name}] sleeping for {delay}s...")
             await asyncio.sleep(delay)
 
-        # 2. 准备文件
+        # 2. 准备代码文件
         safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
         file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
+        
         with open(file_path, "w", encoding="utf-8") as f:
             f.write(script.code)
 
-        # 3. 准备虚拟环境 (关键步骤)
-        # 如果没有依赖，直接用系统 python 也可以，但为了统一，统一用 venv 更好
-        # 或者为了省空间，如果 requirements 为空，则用系统 python
-        python_executable = "python3"
+        # 3. 准备 Python 环境 (Venv 或 System)
+        python_executable = "python3" # 默认使用系统 Python
+        
         if script.requirements and script.requirements.strip():
             try:
+                # 尝试准备虚拟环境
                 python_executable = await prepare_venv(script.id, script.requirements)
             except Exception as e:
-                logger.error(f"Venv Error: {e}")
-                script.last_status = "Dep Error" # 依赖安装失败
+                logger.error(f"Venv Error for {script.name}: {e}")
+                script.last_status = "Dep Error"
                 db.commit()
                 return
 
-        # 4. 注入环境变量
+        # 4. 环境变量注入
         env_vars = os.environ.copy()
         for s in db.query(Secret).all():
             env_vars[s.key] = s.value
         env_vars["PYTHONUNBUFFERED"] = "1"
 
-        logger.info(f"Executing {script.name} using {python_executable}")
+        logger.info(f"Executing [{script.name}] using [{python_executable}]")
         
-        # 5. 执行
+        # 5. 执行脚本
         process = await asyncio.create_subprocess_exec(
             python_executable, file_path,
             env=env_vars,
@@ -225,25 +245,26 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         
         stdout, stderr = await process.communicate()
         
-        # 6. 记录结果
+        # 6. 更新状态
         script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        output = stdout.decode().strip()
-        error = stderr.decode().strip()
+        stdout_str = stdout.decode().strip()
+        stderr_str = stderr.decode().strip()
 
         if process.returncode == 0:
             script.last_status = "Success"
-            logger.info(f"[{script.name}] OK.\n{output}")
+            logger.info(f"[{script.name}] OK.\n{stdout_str}")
         else:
             script.last_status = "Failed"
-            logger.error(f"[{script.name}] FAIL.\nErr: {error}\nOut: {output}")
+            logger.error(f"[{script.name}] FAIL.\nErr: {stderr_str}\nOut: {stdout_str}")
         
         db.commit()
 
     except Exception as e:
-        logger.error(f"Task Error: {e}")
+        logger.error(f"System Error task {script_id}: {e}")
         try:
-            script.last_status = "Error"
-            db.commit()
+            if 'script' in locals() and script:
+                script.last_status = "Error"
+                db.commit()
         except: pass
     finally:
         db.close()
@@ -277,13 +298,15 @@ def startup_event():
     scheduler.start()
     db = SessionLocal()
     
-    # 默认账户
+    # 管理员账户初始化
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
     if not db.query(User).filter(User.username == u).first():
         db.add(User(username=u, hashed_password=pwd_context.hash(p)))
         db.commit()
+        logger.info(f"Created admin: {u}")
     
+    # 加载任务
     for s in db.query(Script).filter(Script.is_active == True).all():
         add_job_to_scheduler(s)
     db.close()
@@ -292,7 +315,7 @@ def startup_event():
 async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
     user = db.query(User).filter(User.username == form.username).first()
     if not user or not pwd_context.verify(form.password, user.hashed_password):
-        raise HTTPException(status_code=400, detail="Error")
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
 @app.get("/api/scripts", response_model=List[ScriptResponse])
@@ -302,8 +325,15 @@ def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
 @app.post("/api/scripts", response_model=ScriptResponse)
 def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
     if db.query(Script).filter(Script.name == s.name).first():
-        raise HTTPException(status_code=400, detail="Name exists")
-    new_s = Script(name=s.name, code=s.code, requirements=s.requirements, cron_exp=s.cron, random_delay=s.delay)
+        raise HTTPException(status_code=400, detail="Script name already exists")
+    
+    new_s = Script(
+        name=s.name, 
+        code=s.code, 
+        requirements=s.requirements, # 保存依赖
+        cron_exp=s.cron, 
+        random_delay=s.delay
+    )
     db.add(new_s)
     db.commit()
     db.refresh(new_s)
@@ -313,12 +343,14 @@ def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_cu
 @app.put("/api/scripts/{script_id}", response_model=ScriptResponse)
 def update_script(script_id: int, s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Script).filter(Script.id == script_id).first()
-    if not item: raise HTTPException(status_code=404)
+    if not item: raise HTTPException(status_code=404, detail="Script not found")
+    
     item.name = s.name
     item.code = s.code
     item.requirements = s.requirements # 更新依赖
     item.cron_exp = s.cron
     item.random_delay = s.delay
+    
     db.commit()
     db.refresh(item)
     add_job_to_scheduler(item)
@@ -328,11 +360,20 @@ def update_script(script_id: int, s: ScriptBase, db: Session = Depends(get_db), 
 def delete_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Script).filter(Script.id == script_id).first()
     if not item: raise HTTPException(status_code=404)
+    
+    # 移除任务
     try: scheduler.remove_job(str(script_id))
     except: pass
-    # 尝试删除虚拟环境以释放空间
+    
+    # 移除虚拟环境文件夹
     venv_path = os.path.join(VENVS_DIR, str(script_id))
-    if os.path.exists(venv_path): shutil.rmtree(venv_path, ignore_errors=True)
+    if os.path.exists(venv_path):
+        try:
+            shutil.rmtree(venv_path, ignore_errors=True)
+            logger.info(f"Removed venv for script {script_id}")
+        except Exception as e:
+            logger.error(f"Failed to remove venv: {e}")
+
     db.delete(item)
     db.commit()
     return {"status": "deleted"}
@@ -340,7 +381,7 @@ def delete_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_c
 @app.post("/api/scripts/{script_id}/run")
 async def run_now(script_id: int, u=Depends(get_current_user)):
     asyncio.create_task(run_script_task(script_id, 0))
-    return {"status": "ok"}
+    return {"status": "triggered"}
 
 @app.get("/api/secrets", response_model=List[SecretResponse])
 def get_secrets(db: Session = Depends(get_db), u=Depends(get_current_user)):
@@ -353,6 +394,7 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
         exist.value = s.value
         db.commit()
         return {"id": exist.id, "key": exist.key}
+    
     new_s = Secret(key=s.key, value=s.value)
     db.add(new_s)
     db.commit()
@@ -360,8 +402,8 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
     return {"id": new_s.id, "key": new_s.key}
 
 @app.get("/{full_path:path}")
-async def spa(full_path: str):
+async def spa_fallback(full_path: str):
     if full_path.startswith("api/"): raise HTTPException(status_code=404)
     idx = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(idx): return FileResponse(idx)
-    return {"msg": "No Frontend"}
+    return {"message": "Frontend not found"}

@@ -22,7 +22,27 @@
 在你的脚本 `setup_driver` 部分，确保有这三行：
 
 ```python
-chrome_options.add_argument('--headless')           # 无头模式 (Docker 没有显示器)
-chrome_options.add_argument('--no-sandbox')         # 禁止沙盒 (Root用户运行必须加)
-chrome_options.add_argument('--disable-dev-shm-usage') # 解决 Docker 内存共享问题
+def setup_driver(self):
+        chrome_options = Options()
+        
+        # =========== Docker 环境必须添加的参数 (开始) ===========
+        # 1. 解决内存不足导致 Chrome 崩溃的关键参数
+        chrome_options.add_argument('--disable-dev-shm-usage') 
+        
+        # 2. Docker 中以 Root 运行必须禁用沙盒
+        chrome_options.add_argument('--no-sandbox')
+        
+        # 3. 无头模式 (因为 Docker 没有显示器)
+        chrome_options.add_argument('--headless')
+        
+        # 4. 禁用 GPU (Docker 通常没有 GPU)
+        chrome_options.add_argument('--disable-gpu')
+        # =========== Docker 环境必须添加的参数 (结束) ===========
+
+        # 其他常规配置
+        chrome_options.add_argument('--window-size=1920,1080')
+        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
+        
+        # 初始化驱动
+        self.driver = webdriver.Chrome(options=chrome_options)
 ```

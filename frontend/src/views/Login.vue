@@ -2,7 +2,7 @@
   <div class="login-bg">
     <n-card class="login-card" :bordered="false" size="huge">
       <div class="header">
-        <h1 class="title">FluxTask</h1>
+        <h1 class="title">GitHub Actions</h1>
         <p class="subtitle">私有化任务调度终端</p>
       </div>
       

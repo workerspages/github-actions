@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text
+from sqlalchemy import create_engine, Column, Integer, String, Boolean, Text, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -82,7 +82,7 @@ class Secret(Base):
     key = Column(String, unique=True, index=True)
     value = Column(String)
 
-# 创建表结构
+# 创建表结构 (只会创建新表，不会修改旧表结构，所以需要下面的迁移逻辑)
 Base.metadata.create_all(bind=engine)
 
 # ==========================================
@@ -298,6 +298,23 @@ def startup_event():
     scheduler.start()
     db = SessionLocal()
     
+    # ---------------------------------------------------------
+    # 数据库自动修复/迁移逻辑 (解决 no such column: requirements 问题)
+    # ---------------------------------------------------------
+    try:
+        # 尝试查询 requirements 列，如果报错说明列不存在
+        db.execute(text("SELECT requirements FROM scripts LIMIT 1"))
+    except Exception:
+        logger.warning("Detecting missing column 'requirements'. Auto-migrating database...")
+        try:
+            # SQLite 添加列
+            db.execute(text("ALTER TABLE scripts ADD COLUMN requirements TEXT DEFAULT ''"))
+            db.commit()
+            logger.info("Database migration successful.")
+        except Exception as e:
+            logger.error(f"Migration failed: {e}")
+    # ---------------------------------------------------------
+
     # 管理员账户初始化
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
@@ -307,8 +324,12 @@ def startup_event():
         logger.info(f"Created admin: {u}")
     
     # 加载任务
-    for s in db.query(Script).filter(Script.is_active == True).all():
-        add_job_to_scheduler(s)
+    try:
+        for s in db.query(Script).filter(Script.is_active == True).all():
+            add_job_to_scheduler(s)
+    except Exception as e:
+        logger.error(f"Error loading scripts: {e}")
+        
     db.close()
 
 @app.post("/token")

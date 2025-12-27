@@ -191,7 +191,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     # Step 1: Setup
     t0 = time.time()
-    setup_log = f"Runner: FluxTask-Worker\nTime: {datetime.now()}\n"
+    setup_log = f"Runner: github-actions-Worker\nTime: {datetime.now()}\n"
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script.random_delay > 0: delay = random.randint(0, script.random_delay)

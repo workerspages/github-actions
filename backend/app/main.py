@@ -28,7 +28,7 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/fluxtask.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/github-actions.db")
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7

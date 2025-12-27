@@ -6,15 +6,15 @@
 ```
 * **多账户登录，请修改以下三处变量名**
 ```
-        self.username = os.environ.get('GH_YUNXZH_HOTMAIL_USERNAME')
-        self.password = os.environ.get('GH_YUNXZH_HOTMAIL_PASSWORD')
-        self.gh_session = os.environ.get('GH_YUNXZH_HOTMAIL_SESSION', '').strip()
+        self.username = os.environ.get('GH_AAAA_HOTMAIL_USERNAME')
+        self.password = os.environ.get('GH_AAAA_HOTMAIL_PASSWORD')
+        self.gh_session = os.environ.get('GH_AAAA_HOTMAIL_SESSION', '').strip()
 ```
 
 ```
-        self.username = os.environ.get('GH_YUNXZH_GMAIL_USERNAME')
-        self.password = os.environ.get('GH_YUNXZH_GMAIL_PASSWORD')
-        self.gh_session = os.environ.get('GH_YUNXZH_GMAIL_SESSION', '').strip()
+        self.username = os.environ.get('GH_BBBB_GMAIL_USERNAME')
+        self.password = os.environ.get('GH_BBBB_GMAIL_PASSWORD')
+        self.gh_session = os.environ.get('GH_BBBB_GMAIL_SESSION', '').strip()
 ```
 
 

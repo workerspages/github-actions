@@ -242,6 +242,14 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     
     env_vars = os.environ.copy()
     for s in db.query(Secret).all(): env_vars[s.key] = s.value
+
+    # === 新增：注入内部 API 凭据，允许脚本自我更新 Secrets ===
+    # 生成一个临时管理员 Token (有效期与系统设置一致)
+    internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
+    env_vars["FLUX_TOKEN"] = internal_token
+    env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000" # 容器内部地址
+    # ========================================================
+    
     env_vars["PYTHONUNBUFFERED"] = "1"
     
     try:

@@ -1,14 +1,14 @@
 version: '3.8'
+
 services:
   fluxtask:
-    image: ghcr.io/your-username/fluxtask:latest
+    image: ghcr.io/你的github用户名/项目名:latest
     container_name: fluxtask
     restart: unless-stopped
     ports:
       - "8080:8000"
     volumes:
-      - ./data:/app/data      # 数据库持久化
-      - ./scripts:/app/scripts # 脚本持久化
+      - ./data:/app/data      # 数据库
+      - ./scripts:/app/scripts # 脚本文件
     environment:
-      - ADMIN_USER=admin
-      - ADMIN_PASSWORD=your_secure_password
+      - TZ=Asia/Shanghai

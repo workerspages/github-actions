@@ -50,7 +50,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 scheduler = AsyncIOScheduler()
 
 # ==========================================
-# 2. 数据库模型 (Models)
+# 2. 数据库模型
 # ==========================================
 
 class User(Base):
@@ -134,7 +134,7 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     return user
 
 # ==========================================
-# 5. 核心逻辑
+# 5. 核心逻辑 (实时日志更新)
 # ==========================================
 
 async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, float]:
@@ -146,11 +146,13 @@ async def prepare_venv(script_id: int, requirements: str) -> tuple[str, str, flo
 
     try:
         if not os.path.exists(python_exec):
+            logger.info(f"[{script_id}] Creating venv...")
             logs.append(f"Creating venv at {venv_path}...")
             subprocess.run([sys.executable, "-m", "venv", venv_path], check=True)
             logs.append("Venv created.")
         
         if requirements and requirements.strip():
+            logger.info(f"[{script_id}] Installing requirements...")
             logs.append(f"Installing dependencies:\n{requirements}")
             req_file = os.path.join(venv_path, "requirements.txt")
             with open(req_file, "w") as f: f.write(requirements)
@@ -176,6 +178,16 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     steps_log = []
     total_start = time.time()
+    
+    # 辅助函数：实时更新数据库日志
+    def update_db(status="Running"):
+        script.last_log = json.dumps(steps_log)
+        script.last_status = status
+        script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        db.commit()
+
+    logger.info(f"Task [{script.name}] started.")
+    update_db("Running")
 
     # Step 1: Setup
     t0 = time.time()
@@ -183,25 +195,47 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
+    
     if delay > 0:
+        logger.info(f"Task [{script.name}] waiting for {delay}s...")
         setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
+        # 记录正在等待
+        steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log}) # 2=Running
+        update_db()
         await asyncio.sleep(delay)
     
+    # 完成 Step 1
+    steps_log = [s for s in steps_log if s["name"] != "Set up job"] # 移除旧的状态
     steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
+    update_db()
 
-    # Step 2: Install
+    # Step 2: Install Dependencies
     t0 = time.time()
     python_exec = "python3"
+    # 记录开始安装
+    steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": "Installing..."})
+    update_db()
+    
     try:
         python_exec, out, dur = await prepare_venv(script.id, script.requirements)
+        # 更新为完成
+        steps_log.pop() 
         steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
+        update_db()
     except Exception as e:
+        steps_log.pop()
         steps_log.append({"name": "Install dependencies", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
-        script.last_status = "Failed"; script.last_log = json.dumps(steps_log); script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        db.commit(); db.close(); return
+        update_db("Failed")
+        db.close()
+        return
 
-    # Step 3: Run
+    # Step 3: Run Script
     t0 = time.time()
+    logger.info(f"Task [{script.name}] executing...")
+    # 记录开始运行
+    steps_log.append({"name": "Run script", "status": 2, "duration": "...", "output": "Running..."})
+    update_db()
+
     safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
     file_path = os.path.join(SCRIPTS_DIR, f"{safe_name}_{script.id}.py")
     with open(file_path, "w", encoding="utf-8") as f: f.write(script.code)
@@ -213,17 +247,20 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     try:
         proc = await asyncio.create_subprocess_exec(python_exec, file_path, env=env_vars, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         stdout, stderr = await proc.communicate()
+        steps_log.pop()
         steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
-        script.last_status = "Success" if proc.returncode == 0 else "Failed"
+        update_db("Success" if proc.returncode == 0 else "Failed")
     except Exception as e:
+        steps_log.pop()
         steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
-        script.last_status = "Error"
+        update_db("Error")
 
     # Step 4: Complete
     steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
-    script.last_log = json.dumps(steps_log)
-    script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    db.commit(); db.close()
+    update_db(script.last_status) # 保持之前的状态
+    
+    logger.info(f"Task [{script.name}] finished.")
+    db.close()
 
 def add_job_to_scheduler(script: Script):
     try: scheduler.remove_job(str(script.id))
@@ -312,13 +349,11 @@ def save_secret(s: SecretCreate, db: Session = Depends(get_db), u=Depends(get_cu
     new_s = Secret(key=s.key, value=s.value); db.add(new_s); db.commit(); db.refresh(new_s)
     return {"id": new_s.id, "key": new_s.key}
 
-# --- 新增：删除 Secret 接口 ---
 @app.delete("/api/secrets/{secret_id}")
 def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Secret).filter(Secret.id == secret_id).first()
-    if not item: raise HTTPException(status_code=404, detail="Secret not found")
-    db.delete(item)
-    db.commit()
+    if not item: raise HTTPException(status_code=404)
+    db.delete(item); db.commit()
     return {"status": "deleted"}
 
 @app.get("/{full_path:path}")

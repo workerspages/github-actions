@@ -75,27 +75,29 @@ scheduler = AsyncIOScheduler()
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True, index=True)
-    username = Column(String, unique=True, index=True)
-    hashed_password = Column(String)
+    # MySQL 必须指定长度，例如 255
+    username = Column(String(255), unique=True, index=True)
+    hashed_password = Column(String(255))
 
 class Script(Base):
     __tablename__ = "scripts"
     id = Column(Integer, primary_key=True, index=True)
-    name = Column(String, unique=True, index=True)
-    code = Column(Text)
+    # 必须指定长度
+    name = Column(String(255), unique=True, index=True)
+    code = Column(Text) # Text 类型在 MySQL 中不需要长度
     requirements = Column(Text, default="")
-    cron_exp = Column(String)
+    cron_exp = Column(String(100)) # 指定长度
     random_delay = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
-    last_run = Column(String, nullable=True)
-    last_status = Column(String, nullable=True)
-    last_log = Column(Text, default="[]") 
+    last_run = Column(String(50), nullable=True)
+    last_status = Column(String(50), nullable=True)
+    last_log = Column(Text, default="[]")
 
 class Secret(Base):
     __tablename__ = "secrets"
     id = Column(Integer, primary_key=True, index=True)
-    key = Column(String, unique=True, index=True)
-    value = Column(String)
+    key = Column(String(255), unique=True, index=True)
+    value = Column(Text) # 建议改为 Text 避免长度限制
 
 Base.metadata.create_all(bind=engine)
 

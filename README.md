@@ -1,254 +1,146 @@
 
+# GitHub Actions - 私有化定时任务管理面板
 
-# GitHub Actions - 全能型私有化定时任务平台
+这是一个轻量级、私有化的定时任务管理面板，模仿 GitHub Actions 的体验。支持 Python 和 Node.js 脚本，内置 Playwright 环境，适合运行各类自动化签到、爬虫及定时维护脚本。
 
-<div align="center">
+![Dashboard Screenshot](https://via.placeholder.com/800x400?text=Dashboard+Preview)
 
-![Docker Image Size](https://img.shields.io/badge/Image%20Size-~1.5GB-blue)
-![Environment](https://img.shields.io/badge/Env-Ubuntu%2022.04-orange)
-![Python](https://img.shields.io/badge/Python-3.10-green)
-![Node.js](https://img.shields.io/badge/Node.js-20%20(LTS)-green)
-![License](https://img.shields.io/badge/License-MIT-yellow)
+## ✨ 功能特性
 
-**一个 100% 复刻 GitHub Actions 体验的私有化容器平台。**
-**内置 Chrome、Playwright、Python 和 Node.js，专为复杂的自动化签到与爬虫任务设计。**
+- **多语言运行时**：支持 Python 3 (含 venv 隔离) 和 Node.js 20。
+- **全能环境**：内置 Chromium 内核和 Playwright，轻松处理浏览器自动化任务。
+- **Web 可视化**：基于 Vue 3 + Naive UI 的现代化管理界面，支持在线编辑代码。
+- **Crontab 调度**：支持标准的 Cron 表达式，精确控制任务运行时间。
+- **日志实时查看**：支持任务运行日志的实时查看与持久化存储。
+- **Secrets 管理**：支持环境变量（Secrets）管理，敏感信息不硬编码。
+- **New! 外部数据库支持**：支持 SQLite（默认）及 MariaDB/MySQL 外部数据库连接。
 
-</div>
+## 🚀 快速部署 (Docker Compose)
 
----
-
-## 📖 项目介绍
-
-**GitHub Actions** 是一个基于 Docker 的任务调度系统，它解决了公共 CI/CD 服务（如 GitHub Actions）IP 地址容易被风控的问题。
-
-与传统的轻量级 Cron 容器不同，FluxTask 采用 **“全能型” (All-in-One)** 架构。它基于 Ubuntu 22.04 构建，预装了现代自动化所需的一切环境，让你可以像在本地电脑或 GitHub Actions 虚拟机中一样，无缝运行复杂的浏览器自动化脚本。
-
-### ✨ 核心特性
-
-*   **🐳 全能环境**：基于 Ubuntu 22.04，内置 **Python 3.10**、**Node.js 20**、**Google Chrome** 和 **Playwright** 全套内核。
-*   **🧠 双引擎支持**：智能识别脚本语言。既可以跑 Python (`pip`), 也可以跑 Node.js (`npm`)。
-*   **🛡️ 私有化部署**：部署在自己的服务器或 NAS 上，拥有独享的洁净 IP，彻底告别 IP 风控。
-*   **📝 实时结构化日志**：完美复刻 GitHub Actions 的日志 UI。分步骤展示（Setup -> Install -> Run），支持实时刷新，状态一目了然。
-*   **🤖 自动化闭环**：脚本可以通过内置 API **反向更新面板 Secrets**。例如：脚本自动过验证码获取新 Cookie 后，直接更新数据库，无需人工干预。
-*   **🎭 智能反爬虫**：支持 **Random Delay (随机延时)**，模拟真人操作时间。
-*   **📦 依赖自动管理**：为每个脚本创建独立的虚拟环境 (venv/node_modules)，依赖互不冲突。
-
----
-
-## 🚀 部署指南
-
-### 1. 准备工作
-确保你的服务器已安装 Docker 和 Docker Compose。
-
-### 2. 创建 `docker-compose.yml`
-新建一个目录（如 `fluxtask`），并在其中创建 `docker-compose.yml`：
+### 1. 创建目录与文件
+创建一个目录（例如 `my-actions`），并在其中创建 `docker-compose.yml` 文件：
 
 ```yaml
 version: '3.8'
 
 services:
   github-actions:
-    image: ghcr.io/workerspages/github-actions:github-actions
+    image: ghcr.io/your-username/github-actions:latest # 请替换为你构建或拉取的镜像地址
     container_name: github-actions
     restart: unless-stopped
     ports:
-      - "8000:8000"             # 外部访问端口:容器内部端口
+      - "8000:8000"
     volumes:
-      - ./data:/app/data        # 数据库持久化
-      - ./scripts:/app/scripts  # 脚本文件持久化
+      - ./data:/app/data        # 数据库(SQLite)及虚拟环境存储
+      - ./scripts:/app/scripts  # 脚本文件存储
     environment:
       - TZ=Asia/Shanghai
-
-      # 自定义管理员密码 (建议修改)
+      # 管理员账号设置
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=admin
-
-      # JWT 加密密钥 (生产环境请务必修改为长随机字符串)
-      - JWT_SECRET=change_this_to_a_secure_random_string
+      # JWT 密钥 (建议修改为随机字符串)
+      - JWT_SECRET=your_secret_key_change_me
+      
+      # === 数据库配置 (可选) ===
+      # 默认使用内置 SQLite，无需配置
+      # - DATABASE_URL=sqlite:////app/data/github-actions.db
+      
+      # 如需连接外部 MariaDB/MySQL，请取消下方注释并修改参数：
+      # - DATABASE_URL=mysql+pymysql://root:password@192.168.1.100:3306/github_actions
 ```
 
-### 3. 启动服务
+### 2. 启动服务
 ```bash
 docker-compose up -d
 ```
 
-访问 `http://ip:8080`，使用默认账号 `admin/admin` 登录。
+### 3. 访问面板
+浏览器访问 `http://你的IP:8000`，默认账号密码均为 `admin`（或你在 yaml 中配置的值）。
 
----
+## ⚙️ 配置说明
 
-## 💻 脚本编写指南
+### 环境变量 (Environment Variables)
 
-GitHub Actions 支持两种语言模式，系统会自动根据代码特征识别。
+| 变量名 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `ADMIN_USER` | `admin` | 面板登录用户名 |
+| `ADMIN_PASSWORD` | `admin` | 面板登录密码 |
+| `JWT_SECRET` | 随机生成 | 用于 Token 加密，**生产环境务必修改固定**，否则重启后需重新登录 |
+| `DATABASE_URL` | `sqlite:////app/data/github-actions.db` | 数据库连接字符串 |
+| `TZ` | `Asia/Shanghai` | 容器时区 |
 
-### 🐍 模式 A: Python (默认)
+### 数据库连接详解 (Database Support)
 
-直接编写 Python 代码即可。
+本项目基于 SQLAlchemy，支持多种数据库后端。
 
-*   **代码示例**：
-    ```python
-    import os
-    from loguru import logger
-    
-    # 读取环境变量
-    key = os.environ.get("MY_SECRET_KEY")
-    logger.info(f"Task started with key: {key}")
-    ```
-*   **依赖管理**：在右侧 **“依赖”** 标签页填写 `requirements.txt` 内容，例如：
-    ```text
-    requests==2.31.0
-    selenium
-    playwright
-    ```
+#### 1. SQLite (默认)
+无需任何配置，数据文件存储在 `/app/data/github-actions.db`。适合单机、轻量级使用。
 
-### 🟢 模式 B: Node.js
+#### 2. MariaDB / MySQL (推荐生产环境)
+如果你希望数据存储在外部数据库，或者需要更高的并发性能，可以使用 MariaDB 或 MySQL。
+在 `docker-compose.yml` 中添加以下环境变量：
 
-在代码**第一行**添加魔法注释 `// runtime: node`。
-
-*   **代码示例**：
-    ```javascript
-    // runtime: node
-    const axios = require('axios');
-    
-    console.log("Hello from Node.js!");
-    console.log("Secret:", process.env.MY_SECRET_KEY);
-    ```
-*   **依赖管理**：在右侧 **“依赖”** 标签页填写 npm 包名（空格或换行分隔），例如：
-    ```text
-    axios
-    playwright
-    dayjs
-    ```
-
----
-
-## 🌐 浏览器自动化 (Selenium / Playwright)
-
-由于是 Docker 无头环境，使用浏览器时必须添加特定的启动参数。
-
-### Python Playwright 示例 (推荐)
-镜像已内置 Playwright 驱动，无需安装，直接使用。
-
-```python
-from playwright.sync_api import sync_playwright
-
-def run():
-    with sync_playwright() as p:
-        # 必须添加 args=['--no-sandbox']
-        browser = p.chromium.launch(
-            headless=True, 
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
-        page = browser.new_page()
-        page.goto("https://www.google.com")
-        print(page.title())
-        browser.close()
-
-if __name__ == "__main__":
-    run()
+```bash
+DATABASE_URL=mysql+pymysql://<用户名>:<密码>@<主机地址>:<端口>/<数据库名>
 ```
 
-### Python Selenium 示例
-镜像已内置 Google Chrome Stable。
-
-```python
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-
-options = Options()
-# ⚠️ Docker 环境必备参数，否则会崩溃
-options.add_argument('--headless')
-options.add_argument('--no-sandbox')
-options.add_argument('--disable-dev-shm-usage')
-options.add_argument('--disable-gpu')
-
-driver = webdriver.Chrome(options=options)
-# ...
+**示例：**
+```bash
+DATABASE_URL=mysql+pymysql://root:123456@192.168.1.10:3306/my_task_db
 ```
+> **注意**：使用外部数据库前，请确保对应的数据库（如 `my_task_db`）已在 MySQL 中创建。表结构会自动初始化。
 
----
+## 📝 脚本编写指南
 
-## 🔐 进阶：脚本自动更新 Secrets
-
-GitHub Actions 允许脚本反向更新面板的 Secrets（例如：自动过验证码后更新 Cookie）。系统会在脚本运行时自动注入 `FLUX_API_URL` 和 `FLUX_TOKEN`。
-
-**Python 示例：**
+### Python 模式 (默认)
+直接编写 Python 代码即可。依赖包请在编辑页面的 **"依赖"** 标签页中填写 `requirements.txt` 内容。
 
 ```python
 import os
-import requests
+from loguru import logger
 
-def update_panel_cookie(new_cookie):
-    api_url = os.environ.get('FLUX_API_URL')
-    token = os.environ.get('FLUX_TOKEN')
-    
-    if api_url and token:
-        try:
-            requests.post(
-                f"{api_url}/api/secrets",
-                json={"key": "JD_COOKIE", "value": new_cookie},
-                headers={"Authorization": f"Bearer {token}"},
-                proxies={"http": None, "https": None} # 关键：绕过系统代理
-            )
-            print("✅ 面板 Cookie 已自动更新")
-        except Exception as e:
-            print(f"❌ 更新失败: {e}")
-
-# 你的业务逻辑...
-update_panel_cookie("pt_key=new_value;...")
+# 获取 Secrets
+token = os.getenv("MY_TOKEN")
+logger.info("任务开始运行...")
 ```
 
----
+### Node.js 模式
+在代码的第一行添加魔法注释 `// runtime: node`，系统会自动切换为 Node.js 运行时。
 
-## ❓ 常见问题 (FAQ)
+```javascript
+// runtime: node
+const axios = require('axios');
 
-**Q: 为什么重启容器后任务都消失了？**
-A: 你没有挂载 `volumes`。请检查 `docker-compose.yml` 中是否包含了 `- ./data:/app/data`。数据文件存储在 `/app/data/fluxtask.db`。
-
-**Q: 浏览器启动报错 `session not created: Chrome instance exited`**
-A: 这是因为 Docker 共享内存不足。请务必在启动参数中添加 `--disable-dev-shm-usage`。
-
-**Q: 依赖安装时提示 HTML 警告？**
-A: 系统默认使用阿里云/清华源加速。这是 `pip` 对国内镜像源 HTML 格式的警告，**完全不影响使用**，请忽略。
-
-**Q: 如何手动安装系统级依赖？**
-A: 镜像基于 Ubuntu 22.04。你可以在 Python 脚本中使用 `subprocess.run(["apt-get", "install", "-y", "..."])` 来临时安装（需要 root 权限，容器默认是 root），但建议将通用依赖加入 `Dockerfile` 重新构建。
-
-
-
----
-
-### 🛠️ 必须要做的修改 (Python 脚本)
-
-在 GitHub Actions 中，有时即便不加某些参数也能跑，但在 Docker 容器内，**必须**加上以下参数，否则 Chrome 进程会崩溃：
-
-在你的脚本 `setup_driver` 部分，确保有这三行：
-
-```python
-def setup_driver(self):
-        chrome_options = Options()
-        
-        # =========== Docker 环境必须添加的参数 (开始) ===========
-        # 1. 解决内存不足导致 Chrome 崩溃的关键参数
-        chrome_options.add_argument('--disable-dev-shm-usage') 
-        
-        # 2. Docker 中以 Root 运行必须禁用沙盒
-        chrome_options.add_argument('--no-sandbox')
-        
-        # 3. 无头模式 (因为 Docker 没有显示器)
-        chrome_options.add_argument('--headless')
-        
-        # 4. 禁用 GPU (Docker 通常没有 GPU)
-        chrome_options.add_argument('--disable-gpu')
-        # =========== Docker 环境必须添加的参数 (结束) ===========
-
-        # 其他常规配置
-        chrome_options.add_argument('--window-size=1920,1080')
-        chrome_options.add_argument('--disable-blink-features=AutomationControlled')
-        
-        # 初始化驱动
-        self.driver = webdriver.Chrome(options=chrome_options)
+console.log("Node.js 任务开始...");
 ```
 
-## 📄 开源协议
+## 📂 项目结构
 
-本项目采用 [MIT License](LICENSE) 开源。欢迎 Star 和 Fork！
+```text
+.
+├── backend/            # FastAPI 后端源码
+├── frontend/           # Vue3 + NaiveUI 前端源码
+├── checkin/            # 内置示例脚本 (签到脚本等)
+├── data/               # (自动生成) 数据存储目录
+├── scripts/            # (自动生成) 脚本文件存储目录
+├── Dockerfile          # 构建文件
+└── docker-compose.yml  # 部署文件
+```
+
+## 🛠️ 本地开发
+
+1. **后端**：
+   ```bash
+   cd backend
+   pip install -r requirements.txt
+   uvicorn app.main:app --reload
+   ```
+2. **前端**：
+   ```bash
+   cd frontend
+   npm install
+   npm run dev
+   ```
+
+## 📄 License
+MIT

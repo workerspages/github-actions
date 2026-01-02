@@ -25,7 +25,7 @@ version: '3.8'
 
 services:
   github-actions:
-    image: ghcr.io/your-username/github-actions:github-actions-mariadb
+    image: ghcr.io/workerspages/github-actions:github-actions-mariadb
     container_name: github-actions
     restart: unless-stopped
     ports:

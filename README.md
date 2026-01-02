@@ -25,7 +25,7 @@ version: '3.8'
 
 services:
   github-actions:
-    image: ghcr.io/your-username/github-actions:latest # 请替换为你构建或拉取的镜像地址
+    image: ghcr.io/your-username/github-actions:github-actions-mariadb
     container_name: github-actions
     restart: unless-stopped
     ports:

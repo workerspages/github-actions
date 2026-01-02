@@ -28,6 +28,7 @@ from loguru import logger
 # 1. 配置与初始化
 # ==========================================
 
+# 默认保持 SQLite，但可以通过环境变量覆盖为 mysql+pymysql://user:pass@host:port/db
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/github-actions.db")
 SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
@@ -41,7 +42,25 @@ os.makedirs(SCRIPTS_DIR, exist_ok=True)
 os.makedirs(VENVS_DIR, exist_ok=True)
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+
+# === 开始: 兼容 SQLite 和 MariaDB/MySQL ===
+engine_kwargs = {}
+
+# SQLite 需要 check_same_thread=False
+if DATABASE_URL.startswith("sqlite"):
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+else:
+    # MariaDB/MySQL 建议设置 pool_recycle 防止连接因为超时被数据库断开
+    # 3600秒 (1小时) 回收一次连接
+    engine_kwargs["pool_recycle"] = 3600
+    # 如果需要调试 SQL 语句，可以开启 echo=True
+    # engine_kwargs["echo"] = False
+
+engine = create_engine(DATABASE_URL, **engine_kwargs)
+# === 结束 ===
+
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 

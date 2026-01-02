@@ -19,3 +19,7 @@ services:
 
       # JWT 加密密钥 (生产环境请务必修改为长随机字符串)
       - JWT_SECRET=change_this_to_a_secure_random_string
+
+      # 连接 MariaDB（外部数据库）
+      # 格式: mysql+pymysql://用户名:密码@数据库地址:端口/数据库名
+    # - DATABASE_URL=mysql+pymysql://root:my-secret-pw@192.168.1.100:3306/github_actions_db

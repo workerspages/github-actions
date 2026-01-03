@@ -21,7 +21,7 @@
         <n-input v-model:value="form.key" placeholder="例如: JD_COOKIE" :disabled="isEdit" />
       </n-form-item>
       <n-form-item label="Secret (Value)">
-        <n-input type="textarea" v-model:value="form.value" placeholder="输入具体的值..." />
+        <n-input type="textarea" v-model:value="form.value" placeholder="输入具体的值（支持 JSON 字符串）..." />
       </n-form-item>
     </n-form>
     <template #footer>

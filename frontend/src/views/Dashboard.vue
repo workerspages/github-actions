@@ -29,11 +29,13 @@
       <n-layout-content class="content-bg" content-style="padding: 24px;">
         <n-grid :x-gap="24" :y-gap="24" cols="1 800:2 1200:3 1600:4">
           <n-grid-item v-for="script in scripts" :key="script.id">
-            <n-card hoverable class="script-card">
+            <n-card hoverable class="script-card" :class="{ 'paused-card': !script.is_active }">
               <template #header>
                 <div class="card-header">
                   <span class="script-name">{{ script.name }}</span>
-                  <n-tag size="small" :type="getStatusType(script.last_status)">
+                  <!-- 状态显示优化 -->
+                  <n-tag v-if="!script.is_active" size="small" type="warning" bordered>已暂停</n-tag>
+                  <n-tag v-else size="small" :type="getStatusType(script.last_status)">
                     {{ script.last_status || 'Wait' }}
                   </n-tag>
                 </div>
@@ -42,7 +44,10 @@
               <div class="card-body">
                 <div class="info-row">
                   <n-icon><time-icon /></n-icon>
-                  <span>{{ script.cron || script.cron_exp }}</span>
+                  <!-- 如果暂停，显示暂停提示，否则显示 cron -->
+                  <span :style="{ textDecoration: !script.is_active ? 'line-through' : 'none' }">
+                    {{ script.cron || script.cron_exp }}
+                  </span>
                 </div>
                 <div class="info-row">
                   <n-icon><hourglass-icon /></n-icon>
@@ -59,6 +64,20 @@
                     <template #icon><n-icon><document-text-icon /></n-icon></template>
                     日志
                   </n-button>
+                  
+                  <!-- 暂停/恢复 按钮 -->
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button size="small" circle secondary :type="script.is_active ? 'warning' : 'success'" @click="toggleScriptStatus(script)">
+                        <template #icon>
+                          <n-icon v-if="script.is_active"><pause-icon /></n-icon>
+                          <n-icon v-else><play-icon /></n-icon>
+                        </template>
+                      </n-button>
+                    </template>
+                    {{ script.is_active ? '暂停任务' : '恢复任务' }}
+                  </n-tooltip>
+
                   <n-popconfirm @positive-click="runScript(script.id)">
                     <template #trigger>
                       <n-button size="small" secondary type="success">运行</n-button>
@@ -117,25 +136,21 @@
           </n-form-item>
           <n-divider />
           
-          <!-- 更新后的提示信息 -->
           <n-alert type="info" :show-icon="false" title="提示">
             <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
+            <p style="font-size: 12px; color: #aaa">可在 "Secrets 管理" 标签页设置此任务独享的环境变量，优先级高于全局设置。</p>
             <n-divider style="margin: 6px 0" />
             <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> (Python) 或包名 (Node.js)。</p>
             <n-divider style="margin: 6px 0" />
             <p>如果出错: 删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
             <n-divider style="margin: 6px 0" />
             <p>⚠️注意: Docker 容器默认是 root 用户，Chrome 限制 root 必须加 <n-text code>args=['--no-sandbox']</n-text></p>
-            <n-divider style="margin: 6px 0" />
-            <p>🐍模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
-            <n-divider style="margin: 6px 0" />
-            <p>🟢模式 B: Node.js 脚本：在代码第一行写上魔法注释：<n-text code>// runtime: node</n-text></p>
           </n-alert>
 
         </n-form>
       </n-layout-sider>
 
-      <!-- 右侧：Tabs (代码 | 依赖) -->
+      <!-- 右侧：Tabs (代码 | 依赖 | Secrets) -->
       <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
         <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;">
           <!-- Tab 1: 代码 -->
@@ -152,24 +167,39 @@
               </div>
               <textarea 
                 v-model="form.requirements" 
-                style="
-                  flex: 1; 
-                  width: 100%; 
-                  background: #1e1e1e; 
-                  color: #d4d4d4; 
-                  border: none; 
-                  padding: 15px; 
-                  font-family: 'Fira Code', 'Consolas', monospace; 
-                  font-size: 14px;
-                  line-height: 1.5;
-                  resize: none; 
-                  outline: none;
-                "
+                class="simple-editor"
                 placeholder="# 在此处输入 requirements.txt 内容..."
                 spellcheck="false"
               ></textarea>
             </div>
           </n-tab-pane>
+
+          <!-- Tab 3: Secrets 管理 (新增) -->
+          <n-tab-pane name="secrets" tab="Secrets 管理" display-directive="show" style="height: 100%; padding: 0;">
+            <div style="padding: 24px; height: 100%; overflow-y: auto;">
+              <n-space vertical size="large">
+                 <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <n-text>任务独享的环境变量 (Task Secrets)</n-text>
+                    <n-button size="small" type="primary" dashed @click="addLocalSecret">
+                      <template #icon><n-icon><add-icon /></n-icon></template>
+                      添加变量
+                    </n-button>
+                 </div>
+                 
+                 <n-empty v-if="localSecrets.length === 0" description="暂无任务私有变量" />
+                 
+                 <div v-for="(item, index) in localSecrets" :key="index" class="secret-row">
+                    <n-input v-model:value="item.key" placeholder="Key (e.g. USERNAME)" style="flex: 1" />
+                    <span style="color: #666">=</span>
+                    <n-input v-model:value="item.value" placeholder="Value" style="flex: 1.5" type="textarea" :autosize="{minRows: 1, maxRows: 3}" />
+                    <n-button circle size="small" type="error" secondary @click="removeLocalSecret(index)">
+                       <template #icon><n-icon><trash-icon /></n-icon></template>
+                    </n-button>
+                 </div>
+              </n-space>
+            </div>
+          </n-tab-pane>
+
         </n-tabs>
       </n-layout-content>
     </n-layout>
@@ -182,7 +212,7 @@
     </template>
   </n-modal>
 
-  <!-- 日志抽屉 -->
+  <!-- 日志抽屉 (保持不变) -->
   <n-drawer v-model:show="showLogDrawer" width="800" placement="right">
     <n-drawer-content :title="currentLogScript?.name + ' - 执行日志'" closable body-style="padding: 0; background-color: #0d1117;">
       <template #header-extra>
@@ -191,11 +221,9 @@
       
       <div v-if="logSteps.length > 0" class="log-container">
         <div v-for="(step, index) in logSteps" :key="index" class="log-step">
-          <!-- 步骤标题栏 -->
           <div class="log-step-header" @click="step.expanded = !step.expanded">
             <div class="step-left">
               <n-icon class="arrow-icon" :class="{ expanded: step.expanded }"><chevron-forward-icon /></n-icon>
-              <!-- 状态图标 -->
               <n-icon v-if="step.status === 0" color="#238636" size="18"><checkmark-circle-icon /></n-icon>
               <n-icon v-else-if="step.status === 1" color="#f85149" size="18"><close-circle-icon /></n-icon>
               <n-icon v-else-if="step.status === 2" color="#dbab09" size="18"><ellipse-icon /></n-icon>
@@ -204,8 +232,6 @@
             </div>
             <span class="step-duration">{{ step.duration }}</span>
           </div>
-          
-          <!-- 步骤详细日志 -->
           <div v-if="step.expanded" class="log-step-body">
             <div v-for="(line, idx) in step.output.split('\n')" :key="idx" class="log-line">
               <span class="line-num">{{ idx + 1 }}</span>
@@ -214,7 +240,6 @@
           </div>
         </div>
       </div>
-      
       <n-empty v-else description="暂无日志" style="margin-top: 100px; color: #8b949e" />
     </n-drawer-content>
   </n-drawer>
@@ -227,13 +252,14 @@ import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NAvatar, 
   NButton, NSpace, NIcon, NGrid, NGridItem, NCard, NTag, NPopconfirm, 
   NModal, NForm, NFormItem, NInput, NSlider, NText, NDivider, NAlert, NEmpty, useMessage,
-  NTabs, NTabPane, NDrawer, NDrawerContent
+  NTabs, NTabPane, NDrawer, NDrawerContent, NTooltip
 } from 'naive-ui'
 import { 
   TimeOutline as TimeIcon, HourglassOutline as HourglassIcon, 
   Add as AddIcon, Refresh as RefreshIcon, List as ListIcon, Key as KeyIcon,
   DocumentText as DocumentTextIcon, ChevronForward as ChevronForwardIcon,
-  CheckmarkCircle as CheckmarkCircleIcon, CloseCircle as CloseCircleIcon, Ellipse as EllipseIcon
+  CheckmarkCircle as CheckmarkCircleIcon, CloseCircle as CloseCircleIcon, Ellipse as EllipseIcon,
+  Play as PlayIcon, Pause as PauseIcon, Trash as TrashIcon
 } from '@vicons/ionicons5'
 import axios from 'axios'
 import Editor from '../components/Editor.vue'
@@ -252,7 +278,10 @@ const showLogDrawer = ref(false)
 const currentLogScript = ref(null)
 const logSteps = ref([])
 
-const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requirements: '' })
+// 表单数据，增加 task_secrets
+const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requirements: '', is_active: true })
+// 本地编辑 Secrets 的临时数组
+const localSecrets = ref([])
 
 const menuOptions = [
   { label: '任务列表', key: 'dashboard', icon: () => h(NIcon, null, { default: () => h(ListIcon) }) },
@@ -309,6 +338,27 @@ const runScript = async (id) => {
   }
 }
 
+// 切换暂停/恢复
+const toggleScriptStatus = async (script) => {
+  try {
+    // 构造完整的更新对象，只修改 is_active
+    const payload = {
+      name: script.name,
+      cron: script.cron || script.cron_exp,
+      delay: script.delay || script.random_delay,
+      code: script.code,
+      requirements: script.requirements,
+      task_secrets: script.task_secrets,
+      is_active: !script.is_active // 切换状态
+    }
+    await axios.put(`/api/scripts/${script.id}`, payload, { headers: { Authorization: `Bearer ${getToken()}` } })
+    message.success(script.is_active ? '任务已暂停' : '任务已恢复')
+    fetchScripts()
+  } catch (e) {
+    message.error('操作失败')
+  }
+}
+
 const deleteScript = async (id) => {
   try {
     await axios.delete(`/api/scripts/${id}`, { headers: { Authorization: `Bearer ${getToken()}` } })
@@ -319,6 +369,14 @@ const deleteScript = async (id) => {
   }
 }
 
+// 本地 Secrets 操作
+const addLocalSecret = () => {
+  localSecrets.value.push({ key: '', value: '' })
+}
+const removeLocalSecret = (index) => {
+  localSecrets.value.splice(index, 1)
+}
+
 const openCreateModal = () => {
   isEdit.value = false
   form.value = { 
@@ -326,8 +384,10 @@ const openCreateModal = () => {
     cron: '0 8 * * *', 
     delay: 300, 
     code: 'import os\nfrom loguru import logger\n\nlogger.info("Task Start...")\n',
-    requirements: ''
+    requirements: '',
+    is_active: true
   }
+  localSecrets.value = [] // 清空本地 Secrets
   showModal.value = true
 }
 
@@ -339,8 +399,21 @@ const editScript = (script) => {
     cron: script.cron || script.cron_exp, 
     delay: script.delay !== undefined ? script.delay : script.random_delay, 
     code: script.code,
-    requirements: script.requirements || ''
+    requirements: script.requirements || '',
+    is_active: script.is_active
   }
+  
+  // 解析 task_secrets JSON 字符串到本地数组
+  localSecrets.value = []
+  try {
+    const secretsObj = JSON.parse(script.task_secrets || '{}')
+    for (const [k, v] of Object.entries(secretsObj)) {
+      localSecrets.value.push({ key: k, value: v })
+    }
+  } catch (e) {
+    console.error("解析 Secrets 失败", e)
+  }
+  
   showModal.value = true
 }
 
@@ -348,12 +421,20 @@ const saveData = async () => {
   if (!form.value.name) return message.warning('请输入名称')
   saving.value = true
   try {
+    // 将本地 Secrets 数组转换为 JSON 字符串
+    const secretsObj = {}
+    localSecrets.value.forEach(item => {
+      if(item.key) secretsObj[item.key] = item.value
+    })
+
     const payload = {
       name: form.value.name,
       cron: form.value.cron,
       delay: form.value.delay,
       code: form.value.code,
-      requirements: form.value.requirements
+      requirements: form.value.requirements,
+      is_active: form.value.is_active,
+      task_secrets: JSON.stringify(secretsObj) // 序列化
     }
     const headers = { Authorization: `Bearer ${getToken()}` }
     
@@ -383,6 +464,9 @@ onMounted(fetchScripts)
 .content-bg { background-color: #101014; }
 .script-card { border-radius: 12px; transition: transform 0.2s; background: #18181c; border: 1px solid #2d2d30; }
 .script-card:hover { transform: translateY(-4px); border-color: #63e2b7; }
+/* 暂停状态的卡片样式 */
+.paused-card { opacity: 0.7; border-style: dashed; }
+
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .script-name { font-weight: 600; font-size: 16px; }
 .info-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: #aaa; }
@@ -390,6 +474,29 @@ onMounted(fetchScripts)
 :deep(.n-tabs) { height: 100%; display: flex; flex-direction: column; }
 :deep(.n-tabs .n-tabs-pane-wrapper) { flex: 1; overflow: hidden; }
 :deep(.n-tab-pane) { height: 100%; display: flex; flex-direction: column; }
+
+.simple-editor {
+  flex: 1; 
+  width: 100%; 
+  background: #1e1e1e; 
+  color: #d4d4d4; 
+  border: none; 
+  padding: 15px; 
+  font-family: 'Fira Code', 'Consolas', monospace; 
+  font-size: 14px;
+  line-height: 1.5;
+  resize: none; 
+  outline: none;
+}
+
+.secret-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  background: rgba(255,255,255,0.03);
+  border-radius: 6px;
+}
 
 /* 日志样式 */
 .log-container { display: flex; flex-direction: column; gap: 8px; padding: 16px; }

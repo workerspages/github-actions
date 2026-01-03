@@ -349,7 +349,7 @@ def startup_event():
     scheduler.start()
     db = SessionLocal()
     # 自动迁移：检查并添加新列
-    for col in ["requirements", "last_log", "task_secrets"]:
+    for col in ["requirements", "last_log", "task_secrets", "is_active"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
         except: 
             try: 

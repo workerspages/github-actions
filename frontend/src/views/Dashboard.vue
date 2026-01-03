@@ -200,7 +200,7 @@
                  <div v-for="(item, index) in localSecrets" :key="index" class="secret-row">
                     <n-input v-model:value="item.key" placeholder="Key (e.g. USERNAME)" style="flex: 1" />
                     <span style="color: #666">=</span>
-                    <n-input v-model:value="item.value" placeholder="Value" style="flex: 1.5" type="textarea" :autosize="{minRows: 1, maxRows: 3}" />
+                    <n-input v-model:value="item.value" placeholder="Value (支持 JSON 字符串)" style="flex: 1.5" type="textarea" :autosize="{minRows: 1, maxRows: 3}" />
                     <n-button circle size="small" type="error" secondary @click="removeLocalSecret(index)">
                        <template #icon><n-icon><trash-icon /></n-icon></template>
                     </n-button>

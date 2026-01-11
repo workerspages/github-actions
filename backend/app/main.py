@@ -9,6 +9,7 @@ import json
 import time
 from datetime import datetime, timedelta
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Depends, HTTPException, status, Body
 from fastapi.staticfiles import StaticFiles
@@ -54,7 +55,7 @@ Base = declarative_base()
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-scheduler = AsyncIOScheduler()
+scheduler = AsyncIOScheduler(timezone=ZoneInfo("Asia/Shanghai"), job_defaults={'misfire_grace_time': 1800})
 
 # ==========================================
 # 2. 数据库模型
@@ -368,6 +369,11 @@ def startup_event():
         db.add(Secret(key="GITHUB_ACTIONS", value="true")); db.commit()
     
     for s in db.query(Script).filter(Script.is_active == True).all(): add_job_to_scheduler(s)
+    
+    # 打印调度器信息，确认时区
+    logger.info(f"Scheduler initialized with timezone: {scheduler.timezone}")
+    logger.info(f"Scheduler running: {scheduler.running}")
+    
     db.close()
 
 @app.post("/token")

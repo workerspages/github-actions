@@ -105,10 +105,23 @@ logger.info("任务开始运行...")
 ```
 
 ### 动态更新 Secrets (NEW!)
-脚本运行时会自动注入以下环境变量，可用于动态更新任务独享的 Secrets：
-- `FLUX_TOKEN` - 内部 API 授权 Token
-- `FLUX_API_URL` - 内部 API 地址
-- `FLUX_SCRIPT_ID` - 当前脚本 ID
+
+本项目内置 **GitHub API 代理层**，让原本为 GitHub Actions 设计的脚本无需任何修改即可运行。
+
+#### 自动兼容模式（推荐）
+
+如果你的脚本使用 `REPO_TOKEN` + GitHub API 更新 Secrets（如签到脚本的自动更新 Cookie 功能），**无需任何配置**，系统会自动：
+1. 注入 `REPO_TOKEN` 和 `GITHUB_REPOSITORY` 环境变量
+2. 拦截对 `api.github.com` 的请求
+3. 将 Secret 更新转发到本地内部 API
+
+```
+原脚本调用 GitHub API → 代理拦截 → 更新到任务独享 Secrets
+```
+
+#### 手动调用内部 API
+
+如果你在编写新脚本，可以直接使用内部 API：
 
 ```python
 import os
@@ -129,6 +142,15 @@ def update_task_secret(key: str, value: str):
 new_session = "abc123..."  # 从登录流程获取
 update_task_secret("GH_SESSION", new_session)
 ```
+
+**运行时自动注入的环境变量**：
+| 变量名 | 说明 |
+|--------|------|
+| `FLUX_TOKEN` | 内部 API 授权 Token |
+| `FLUX_API_URL` | 内部 API 地址 |
+| `FLUX_SCRIPT_ID` | 当前脚本 ID |
+| `REPO_TOKEN` | 自动注入（供兼容 GitHub Actions 脚本） |
+| `GITHUB_REPOSITORY` | 自动注入（供兼容 GitHub Actions 脚本） |
 
 ### Node.js 模式
 在代码的第一行添加魔法注释 `// runtime: node`，系统会自动切换为 Node.js 运行时。

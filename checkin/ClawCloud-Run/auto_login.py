@@ -118,22 +118,57 @@ class Telegram:
 
 
 class SecretUpdater:
-    """GitHub Secret 更新器"""
+    """Secret 更新器 - 优先使用内部 API，回退到 GitHub API"""
     
     def __init__(self):
-        self.token = os.environ.get('REPO_TOKEN')
+        # 内部 API 模式（私有化部署）
+        self.flux_token = os.environ.get('FLUX_TOKEN')
+        self.flux_url = os.environ.get('FLUX_API_URL')
+        self.script_id = os.environ.get('FLUX_SCRIPT_ID')
+        self.use_internal = bool(self.flux_token and self.flux_url and self.script_id)
+        
+        # GitHub API 模式（原版）
+        self.gh_token = os.environ.get('REPO_TOKEN')
         self.repo = os.environ.get('GITHUB_REPOSITORY')
-        self.ok = bool(self.token and self.repo)
-        if self.ok:
-            print("✅ Secret 自动更新已启用")
+        self.use_github = bool(self.gh_token and self.repo)
+        
+        if self.use_internal:
+            print("✅ Secret 自动更新已启用（内部 API 模式）")
+        elif self.use_github:
+            print("✅ Secret 自动更新已启用（GitHub API 模式）")
         else:
-            print("⚠️ Secret 自动更新未启用（需要 REPO_TOKEN）")
+            print("⚠️ Secret 自动更新未启用")
+        
+        self.ok = self.use_internal or self.use_github
     
     def update(self, name, value):
         if not self.ok:
             return False
+        
+        # 优先使用内部 API
+        if self.use_internal:
+            return self._update_internal(name, value)
+        
+        # 回退到 GitHub API
+        return self._update_github(name, value)
+    
+    def _update_internal(self, name, value):
+        """使用内部 API 更新任务独享 Secrets"""
         try:
-            # 注意：PyNaCl 库可能未安装，需要捕获异常
+            r = requests.put(
+                f"{self.flux_url}/api/scripts/{self.script_id}/secrets/{name}",
+                json={"value": value},
+                headers={"Authorization": f"Bearer {self.flux_token}"},
+                timeout=30
+            )
+            return r.status_code == 200
+        except Exception as e:
+            print(f"内部 API 更新失败: {e}")
+            return False
+    
+    def _update_github(self, name, value):
+        """使用 GitHub API 更新仓库 Secrets（原版逻辑）"""
+        try:
             try:
                 from nacl import encoding, public
             except ImportError:
@@ -141,11 +176,10 @@ class SecretUpdater:
                 return False
             
             headers = {
-                "Authorization": f"token {self.token}",
+                "Authorization": f"token {self.gh_token}",
                 "Accept": "application/vnd.github.v3+json"
             }
             
-            # 获取公钥
             r = requests.get(
                 f"https://api.github.com/repos/{self.repo}/actions/secrets/public-key",
                 headers=headers, timeout=30
@@ -157,7 +191,6 @@ class SecretUpdater:
             pk = public.PublicKey(key_data['key'].encode(), encoding.Base64Encoder())
             encrypted = public.SealedBox(pk).encrypt(value.encode())
             
-            # 更新 Secret
             r = requests.put(
                 f"https://api.github.com/repos/{self.repo}/actions/secrets/{name}",
                 headers=headers,

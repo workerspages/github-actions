@@ -1,6 +1,6 @@
 """
 ClawCloud 自动登录脚本
-- 自动检测区域跳转（如 ap-southeast-1.console.claw.cloud）
+- 自动检测区域跳转（如 us-west-1.run.claw.cloud）
 - 等待设备验证批准（30秒）
 - 每次登录后自动更新 Cookie
 - Telegram 通知
@@ -23,7 +23,7 @@ from playwright.sync_api import sync_playwright
 PROXY_DSN = os.environ.get("PROXY_DSN", "").strip()
 
 # 固定登录入口，OAuth后会自动跳转到实际区域
-LOGIN_ENTRY_URL = "https://console.run.claw.cloud/login"
+LOGIN_ENTRY_URL = "https://us-west-1.run.claw.cloud/login"
 SIGNIN_URL = f"{LOGIN_ENTRY_URL}/signin"
 DEVICE_VERIFY_WAIT = 30  # Mobile验证 默认等 30 秒
 TWO_FACTOR_WAIT = int(os.environ.get("TWO_FACTOR_WAIT", "120"))  # 2FA验证 默认等 120 秒
@@ -187,8 +187,8 @@ class AutoLogin:
         self.n = 0
         
         # 区域相关
-        self.detected_region = 'eu-central-1'  # 检测到的区域，如 "ap-southeast-1"
-        self.region_base_url = 'https://eu-central-1.run.claw.cloud'  # 检测到的区域基础 URL
+        self.detected_region = 'us-west-1'  # 检测到的区域，如 "us-west-1"
+        self.region_base_url = 'https://us-west-1.run.claw.cloud'  # 检测到的区域基础 URL
         
     def log(self, msg, level="INFO"):
         icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARN": "⚠️", "STEP": "🔹"}
@@ -225,11 +225,11 @@ class AutoLogin:
     def detect_region(self, url):
         """
         从 URL 中检测区域信息
-        例如: https://ap-southeast-1.console.claw.cloud/... -> ap-southeast-1
+        例如: https://us-west-1.console.claw.cloud/... -> us-west-1
         """
         try:
             parsed = urlparse(url)
-            host = parsed.netloc  # 如 "ap-southeast-1.console.claw.cloud"
+            host = parsed.netloc  # 如 "us-west-1.console.claw.cloud"
             
             # 检查是否是区域子域名格式
             # 格式: {region}.console.claw.cloud
@@ -245,7 +245,7 @@ class AutoLogin:
             # 如果是主域名 console.run.claw.cloud，可能还没跳转
             if 'console.run.claw.cloud' in host or 'claw.cloud' in host:
                 # 尝试从路径或其他地方提取区域信息
-                # 有些平台可能在路径中包含区域，如 /region/ap-southeast-1/...
+                # 有些平台可能在路径中包含区域，如 /region/us-west-1/...
                 path = parsed.path
                 region_match = re.search(r'/(?:region|r)/([a-z]+-[a-z]+-\d+)', path)
                 if region_match:

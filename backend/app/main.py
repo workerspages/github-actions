@@ -277,7 +277,22 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     file_name = f"{safe_name}_{script.id}{file_ext}"
     file_path = os.path.join(SCRIPTS_DIR, file_name)
     
-    with open(file_path, "w", encoding="utf-8") as f: f.write(script.code)
+    # 为 Python 脚本注入 GitHub API 代理模块
+    script_code = script.code
+    if runtime == "python":
+        proxy_import = '''# === GitHub API Proxy (Auto-injected) ===
+import sys, os
+_proxy_path = "/app/app"
+if _proxy_path not in sys.path: sys.path.insert(0, _proxy_path)
+try:
+    import github_api_proxy
+except: pass
+# === End Proxy ===
+
+'''
+        script_code = proxy_import + script_code
+    
+    with open(file_path, "w", encoding="utf-8") as f: f.write(script_code)
     
     # 注入环境变量
     env_vars = os.environ.copy()

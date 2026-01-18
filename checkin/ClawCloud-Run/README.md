@@ -1,167 +1,46 @@
-# ⭐ Star 星星走起 动动发财手点点 ⭐
+# ClawCloud-Run 自动登录助手
 
-* **每5天的10点05分执行**
-```
-05 10 */5 * *
-```
-* **多账户登录，请修改以下三处变量名**
-```
-        self.username = os.environ.get('GH_AAAA_HOTMAIL_USERNAME')
-        self.password = os.environ.get('GH_AAAA_HOTMAIL_PASSWORD')
-        self.gh_session = os.environ.get('GH_AAAA_HOTMAIL_SESSION', '').strip()
-```
+这是一个通过 GitHub Actions 实现的自动化脚本，用于定时自动登录 [ClawCloudRun](https://console.run.claw.cloud/signin?link=WRJQ4YKZNLI5)，以保持账户活跃。
 
-```
-        self.username = os.environ.get('GH_BBBB_GMAIL_USERNAME')
-        self.password = os.environ.get('GH_BBBB_GMAIL_PASSWORD')
-        self.gh_session = os.environ.get('GH_BBBB_GMAIL_SESSION', '').strip()
-```
+## ✨ 主要功能
+
+- **🤖 自动登录**: 定时执行登录操作，避免账户因不活跃而被清空项目。
+- **🌍 区域自适应**: 自动检测并跳转到账户所在的区域。
+- **🔒 安全验证支持**:
+    - 支持设备授权验证 (Device Verification)。
+    - 支持两步验证 (2FA)，包括：
+        - GitHub 移动应用批准。
+        - 通过 Telegram 机器人发送验证码 (`/code 123456`)。
+- **🔔 实时通知**: 通过 Telegram 机器人发送登录结果、设备验证和两步验证请求。
+- **🍪 Cookie 自动更新**: 登录成功后，可自动更新 GitHub Secrets 中的 `GH_SESSION`，免去手动更新的麻烦。
+
+## 🚀 如何部署
+
+1.  **Fork 本仓库**: 点击右上角的 "Fork" 按钮，将此项目复制到你自己的 GitHub 账户下。
+2.  **配置 Secrets**: 在你 Fork 的仓库中，进入 `Settings` -> `Secrets and variables` -> `Actions`。点击 `New repository secret`，添加以下变量：
+
+## ⚙️ 配置变量
+
+| Secret 名称       | 是否必须       | 描述                                                                                                                              |
+| ----------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `GH_USERNAME`     | **是**   | 你的 GitHub 用户名。                                                                                                                |
+| `GH_PASSWORD`     | **是**   | 你的 GitHub 密码。                                                                                                                |
+| `GH_SESSION`      | **是**       | GitHub 的 `user_session` Cookie 值。首次运行时可不填，脚本会自动获取并提示你更新。如果配置了 `REPO_TOKEN`，脚本可自动更新此值。 |
+| `TG_BOT_TOKEN`    | **是**        | 用于发送通知的 Telegram Bot Token。如果你需要接收登录状态或进行两步验证，则必须配置。                                              |
+| `TG_CHAT_ID`      | **是**        | 你的 Telegram User ID 或 Channel ID，用于接收机器人消息。                                                                        |
+| `REPO_TOKEN`      | **是**       | GitHub Personal Access Token。如果希望脚本自动更新 `GH_SESSION`，需要提供此 Token。请授予 `repo` 权限。                            |
+| `TWO_FACTOR_WAIT` | 否       | 两步验证的等待时间（秒），默认为 `120`。                                                                                              |
 
 
+## ▶️ 如何运行
 
+- **自动运行**: 默认配置下，脚本会**每 5 天**自动运行一次。你可以在 `.github/workflows/keep-alive.yml` 文件中修改 `cron`表达式来调整运行频率。
+- **手动运行**:
+    1.  进入 Fork 后的仓库页面。
+    2.  点击 `Actions` 选项卡。
+    3.  在左侧选择 `ClawCloud 自动登录保活`。
+    4.  点击右侧的 `Run workflow` 按钮，即可立即触发一次登录任务。
 
+## 🙏 致谢
 
-
-
-
-
-
-## ClawCloud 官网(GitHub注册送5美元地址)：[run.claw.cloud](https://console.run.claw.cloud/signin?link=M9P7GXP3M3W5)
-
-> 自动登录 ClawCloud，保持账户活跃，支持设备验证 + 两步验证
-
-![设备验证](./3.png)
-
----
-
-## ⚠️ 注意事项
-
-- 支持 **Mobile验证** 和 **2FA验证**
-- 首次运行：需要设备验证，收到 TG 通知后 **30 秒内** 批准
-- REPO_TOKEN：需要有 `repo` 权限才能自动更新 Cookie
-- Cookie 有效期：每次运行都会更新，保持最新
-
-### Mobile 验证
-![Mobile验证](./1.png)
-
-### 2FA 验证
-![2FA验证](./4.png)
-
-### 验证设置
-![设置Mobile优先验证](./2.png)
-
----
-
-## 🔐 Secrets 配置
-
-| Secret 名称 | 必需 | 说明 |
-|-------------|------|------|
-| `GH_USERNAME` | ✅ | GitHub 用户名 |
-| `GH_PASSWORD` | ✅ | GitHub 密码 |
-| `GH_SESSION` | ❌ | 自动生成，无需手动添加 |
-| `TG_BOT_TOKEN` | ❌ | Telegram Bot Token |
-| `TG_CHAT_ID` | ❌ | Telegram Chat ID |
-| `REPO_TOKEN` | ❌ | GitHub PAT（用于自动更新 Secret） |
-
----
-
-## 🚀 快速开始
-
-### 1. Fork 仓库
-
-点击右上角 **Fork** 按钮
-
-### 2. 配置 Secrets
-
-进入 **Settings** → **Secrets and variables** → **Actions**，添加：
-
-**必需：**
-- `GH_USERNAME` - GitHub 用户名
-- `GH_PASSWORD` - GitHub 密码
-
-**推荐：**
-- `TG_BOT_TOKEN` - Telegram Bot Token
-- `TG_CHAT_ID` - Telegram Chat ID
-- `REPO_TOKEN` - GitHub Personal Access Token
-
-### 3. 启用 Actions
-
-进入 **Actions** → 点击 **I understand my workflows**
-
-### 4. 手动测试
-
-选择 **ClawCloud 自动登录保活** → **Run workflow**
-
----
-
-## 📊 流程图
-```
-┌─────────────────────────────────────────────────────────┐
-│  1. 打开 ClawCloud 登录页                                │
-│         ↓                                               │
-│  2. 点击 "GitHub" 登录按钮                               │
-│         ↓                                               │
-│  3. GitHub 认证                                         │
-│     ├── 输入用户名/密码                                  │
-│     ├── 设备验证 (如需要) → 等待30秒/邮件批准             │
-│     └── 两步验证 (如需要)                                │
-│         ├── GitHub Mobile → 等待手机批准                 │
-│         └── TOTP → 通过 Telegram /code 123456 输入       │
-│         ↓                                               │
-│  4. OAuth 授权 (如需要)                                  │
-│         ↓                                               │
-│  5. 等待重定向回 ClawCloud                               │
-│         ↓                                               │
-│  6. 保活操作 (访问控制台/应用页面)                        │
-│         ↓                                               │
-│  7. 提取新 Cookie 并保存/通知                            │
-└─────────────────────────────────────────────────────────┘
-```
----
-
-## 📁 文件结构
-
-```
-.
-├── .github/
-│   └── workflows/
-│       └── auto_login.yml    # GitHub Actions 配置
-├── scripts/
-│   └── auto_login.py         # 自动登录脚本
-├── 1.png                      # Mobile 验证截图
-├── 2.png                      # 设置截图
-├── 3.png                      # 主截图
-├── 4.png                      # 2FA 截图
-└── README.md
-```
-
----
-
-## 🐛 常见问题
-
-### Q: 设备验证超时怎么办？
-A: 确保 Telegram 通知已配置，收到通知后立即在邮箱或 GitHub App 批准。
-
-### Q: 2FA 验证码怎么输入？
-A: 在 Telegram 发送 `/code 123456`（替换为你的 6 位验证码）。
-
-### Q: Cookie 更新失败？
-A: 检查 `REPO_TOKEN` 是否有 `repo` 权限。
-
-### Q: 为什么需要 GitHub 密码？
-A: 用于 Cookie 失效时重新登录，密码存储在 GitHub Secrets 中，安全可靠。
-
----
-
-## 📄 License
-
-MIT License
-
----
-
-## 🤝 贡献
-[感谢：axibayuit-a11y佬](https://github.com/axibayuit-a11y)  优化：支持了2fa验证
-
-欢迎提交 Issue 和 Pull Request！
-
-⭐ 如果对你有帮助，请点个 Star 支持一下！
+本项目基于 [oyz8/ClawCloud-Run](https://github.com/oyz8/ClawCloud-Run) 做了些调整，感谢原作者的贡献。

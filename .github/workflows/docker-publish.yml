@@ -2,7 +2,7 @@ name: Build and Publish
 
 on:
   push:
-    branches: [ "github-actions-mariadb" ]
+    branches: [ "github-actions-mariadb-20260118" ]
   workflow_dispatch:
 
 env:

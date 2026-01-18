@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   github-actions:
-    image: ghcr.io/workerspages/github-actions:github-actions-mariadb
+    image: ghcr.io/workerspages/github-actions:github-actions-mariadb-secrets
     container_name: github-actions
     restart: unless-stopped
     user: "0:0"

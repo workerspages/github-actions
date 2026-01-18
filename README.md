@@ -152,6 +152,14 @@ update_task_secret("GH_SESSION", new_session)
 | `REPO_TOKEN` | 自动注入（供兼容 GitHub Actions 脚本） |
 | `GITHUB_REPOSITORY` | 自动注入（供兼容 GitHub Actions 脚本） |
 
+#### 其他变量名兼容
+
+如果脚本使用其他变量名检查配置（如 `GH_PAT`、`GH_TOKEN` 等），只需在任务的 **Secrets 管理** 中添加同名变量，值可以随意填写：
+```
+GH_PAT = 任意值
+```
+因为代理拦截的是 **API 请求**，变量值不会被真正使用，只是让脚本通过配置检查。
+
 ### Node.js 模式
 在代码的第一行添加魔法注释 `// runtime: node`，系统会自动切换为 Node.js 运行时。
 

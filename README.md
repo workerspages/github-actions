@@ -105,16 +105,20 @@ logger.info("任务开始运行...")
 ```
 
 ### 动态更新 Secrets (NEW!)
-脚本运行时会自动注入 `FLUX_TOKEN` 和 `FLUX_API_URL`，可用于动态更新系统中的 Secrets：
+脚本运行时会自动注入以下环境变量，可用于动态更新任务独享的 Secrets：
+- `FLUX_TOKEN` - 内部 API 授权 Token
+- `FLUX_API_URL` - 内部 API 地址
+- `FLUX_SCRIPT_ID` - 当前脚本 ID
 
 ```python
 import os
 import requests
 
-def update_secret(key: str, value: str):
-    """更新系统中的 Secret 值"""
+def update_task_secret(key: str, value: str):
+    """更新当前任务的独享 Secret"""
+    script_id = os.getenv('FLUX_SCRIPT_ID')
     resp = requests.put(
-        f"{os.getenv('FLUX_API_URL')}/api/secrets/{key}",
+        f"{os.getenv('FLUX_API_URL')}/api/scripts/{script_id}/secrets/{key}",
         json={"value": value},
         headers={"Authorization": f"Bearer {os.getenv('FLUX_TOKEN')}"}
     )
@@ -123,7 +127,7 @@ def update_secret(key: str, value: str):
 
 # 示例：更新 GH_SESSION
 new_session = "abc123..."  # 从登录流程获取
-update_secret("GH_SESSION", new_session)
+update_task_secret("GH_SESSION", new_session)
 ```
 
 ### Node.js 模式

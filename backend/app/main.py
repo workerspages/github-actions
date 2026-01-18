@@ -295,6 +295,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
     env_vars["FLUX_TOKEN"] = internal_token
     env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000"
+    env_vars["FLUX_SCRIPT_ID"] = str(script.id)  # 注入脚本ID供更新任务Secrets使用
     env_vars["PYTHONUNBUFFERED"] = "1"
     env_vars["GITHUB_ACTIONS"] = "true" # 模拟 GitHub Actions 环境
     
@@ -473,6 +474,26 @@ def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Sessi
     exist.value = value
     db.commit()
     return {"status": "updated", "key": key}
+
+@app.put("/api/scripts/{script_id}/secrets/{key}")
+def update_task_secret(script_id: int, key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
+    """更新任务独享的 Secrets（脚本使用 FLUX_SCRIPT_ID 调用）"""
+    script = db.query(Script).filter(Script.id == script_id).first()
+    if not script:
+        raise HTTPException(status_code=404, detail=f"Script {script_id} not found")
+    
+    # 解析现有的 task_secrets
+    try:
+        secrets_dict = json.loads(script.task_secrets or "{}")
+    except:
+        secrets_dict = {}
+    
+    # 更新或新增指定的 key
+    secrets_dict[key] = value
+    script.task_secrets = json.dumps(secrets_dict)
+    db.commit()
+    
+    return {"status": "updated", "script_id": script_id, "key": key}
 
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):

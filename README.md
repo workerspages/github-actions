@@ -104,6 +104,28 @@ token = os.getenv("MY_TOKEN")
 logger.info("任务开始运行...")
 ```
 
+### 动态更新 Secrets (NEW!)
+脚本运行时会自动注入 `FLUX_TOKEN` 和 `FLUX_API_URL`，可用于动态更新系统中的 Secrets：
+
+```python
+import os
+import requests
+
+def update_secret(key: str, value: str):
+    """更新系统中的 Secret 值"""
+    resp = requests.put(
+        f"{os.getenv('FLUX_API_URL')}/api/secrets/{key}",
+        json={"value": value},
+        headers={"Authorization": f"Bearer {os.getenv('FLUX_TOKEN')}"}
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+# 示例：更新 GH_SESSION
+new_session = "abc123..."  # 从登录流程获取
+update_secret("GH_SESSION", new_session)
+```
+
 ### Node.js 模式
 在代码的第一行添加魔法注释 `// runtime: node`，系统会自动切换为 Node.js 运行时。
 

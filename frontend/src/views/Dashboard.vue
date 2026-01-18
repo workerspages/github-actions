@@ -293,12 +293,11 @@ const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requiremen
 const localSecrets = ref([])
 
 const menuOptions = [
-  { label: '任务列表', key: 'dashboard', icon: () => h(NIcon, null, { default: () => h(ListIcon) }) },
-  { label: 'Secrets 管理', key: 'secrets', icon: () => h(NIcon, null, { default: () => h(KeyIcon) }) }
+  { label: '任务列表', key: 'dashboard', icon: () => h(NIcon, null, { default: () => h(ListIcon) }) }
 ]
 
 const handleMenuClick = (key) => {
-  if (key === 'secrets') router.push('/secrets')
+  // 仅保留任务列表，无额外逻辑
 }
 
 const getStatusType = (status) => {

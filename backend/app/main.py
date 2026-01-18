@@ -464,6 +464,16 @@ def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_c
     db.delete(item); db.commit()
     return {"status": "deleted"}
 
+@app.put("/api/secrets/{key}")
+def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
+    """允许脚本通过 API 更新 Secret 值（用于 REPO_TOKEN 功能）"""
+    exist = db.query(Secret).filter(Secret.key == key).first()
+    if not exist:
+        raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
+    exist.value = value
+    db.commit()
+    return {"status": "updated", "key": key}
+
 @app.get("/{full_path:path}")
 async def spa_fallback(full_path: str):
     if full_path.startswith("api/"): raise HTTPException(status_code=404)

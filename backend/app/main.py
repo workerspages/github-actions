@@ -46,7 +46,12 @@ engine_kwargs = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
-    engine_kwargs["pool_recycle"] = 3600
+    # 外挂数据库（MariaDB/MySQL）连接池配置
+    engine_kwargs["pool_recycle"] = 300  # 5分钟回收连接（避免云数据库超时）
+    engine_kwargs["pool_pre_ping"] = True  # 使用前检测连接是否有效
+    engine_kwargs["pool_size"] = 5  # 连接池大小
+    engine_kwargs["max_overflow"] = 10  # 允许的额外连接数
+    engine_kwargs["pool_timeout"] = 30  # 获取连接超时
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 
@@ -216,27 +221,51 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
     return "python", "Unknown runtime", 0
 
 async def run_script_task(script_id: int, override_delay: int = -1):
-    db = SessionLocal()
-    script = db.query(Script).filter(Script.id == script_id).first()
-    if not script: return db.close()
-
-    # 如果任务被暂停（is_active=False）且不是强制手动运行（通常手动运行会绕过scheduler），
-    # 但此处 run_script_task 是通用入口。
-    # 如果是调度器触发，add_job_to_scheduler 会控制。
-    # 这里主要处理逻辑。
+    # 使用短连接模式：每次操作后关闭连接，避免外挂数据库超时
+    def get_script_data():
+        db = SessionLocal()
+        try:
+            script = db.query(Script).filter(Script.id == script_id).first()
+            if not script:
+                return None
+            # 返回需要的数据副本
+            return {
+                "id": script.id,
+                "name": script.name,
+                "code": script.code,
+                "requirements": script.requirements,
+                "random_delay": script.random_delay,
+                "task_secrets": script.task_secrets,
+            }
+        finally:
+            db.close()
+    
+    script_data = get_script_data()
+    if not script_data:
+        return
 
     steps_log = []
     
     def update_db(status="Running"):
-        script.last_log = json.dumps(steps_log)
-        script.last_status = status
-        script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        db.commit()
+        """使用新连接更新数据库，避免长连接超时"""
+        db = SessionLocal()
+        try:
+            script = db.query(Script).filter(Script.id == script_id).first()
+            if script:
+                script.last_log = json.dumps(steps_log)
+                script.last_status = status
+                script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                db.commit()
+        except Exception as e:
+            logger.error(f"Failed to update db for script {script_id}: {e}")
+            db.rollback()
+        finally:
+            db.close()
 
-    logger.info(f"Task [{script.name}] started.")
+    logger.info(f"Task [{script_data['name']}] started.")
     update_db("Running")
 
-    runtime = detect_runtime(script.code)
+    runtime = detect_runtime(script_data['code'])
 
     # Step 1: Setup
     t0 = time.time()
@@ -244,7 +273,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     
     delay = 0
     if override_delay >= 0: delay = override_delay
-    elif script.random_delay > 0: delay = random.randint(0, script.random_delay)
+    elif script_data['random_delay'] > 0: delay = random.randint(0, script_data['random_delay'])
     
     if delay > 0:
         setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
@@ -265,7 +294,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     env_dir = os.path.join(VENVS_DIR, str(script_id))
     
     try:
-        exec_cmd, out, dur = await prepare_env(script.id, script.requirements, runtime)
+        exec_cmd, out, dur = await prepare_env(script_data['id'], script_data['requirements'], runtime)
         steps_log.pop()
         steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
         update_db()
@@ -273,7 +302,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         steps_log.pop()
         steps_log.append({"name": "Install dependencies", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
         update_db("Failed")
-        db.close()
         return
 
     # Step 3: Run Script
@@ -282,12 +310,12 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     update_db()
 
     file_ext = ".js" if runtime == "node" else ".py"
-    safe_name = "".join([c for c in script.name if c.isalnum() or c in (' ', '_', '-')]).strip()
-    file_name = f"{safe_name}_{script.id}{file_ext}"
+    safe_name = "".join([c for c in script_data['name'] if c.isalnum() or c in (' ', '_', '-')]).strip()
+    file_name = f"{safe_name}_{script_data['id']}{file_ext}"
     file_path = os.path.join(SCRIPTS_DIR, file_name)
     
     # 为 Python 脚本注入 GitHub API 代理模块
-    script_code = script.code
+    script_code = script_data['code']
     if runtime == "python":
         proxy_import = '''# === GitHub API Proxy (Auto-injected) ===
 import sys, os
@@ -305,21 +333,25 @@ except: pass
     
     # 注入环境变量
     env_vars = os.environ.copy()
-    # 1. 注入全局 Secrets
-    for s in db.query(Secret).all(): env_vars[s.key] = s.value
+    # 1. 注入全局 Secrets（使用短连接）
+    db_secrets = SessionLocal()
+    try:
+        for s in db_secrets.query(Secret).all(): env_vars[s.key] = s.value
+    finally:
+        db_secrets.close()
     # 2. 注入任务独享 Secrets (覆盖全局)
     try:
-        task_specific_secrets = json.loads(script.task_secrets)
+        task_specific_secrets = json.loads(script_data['task_secrets'])
         if isinstance(task_specific_secrets, dict):
             for k, v in task_specific_secrets.items():
                 env_vars[k] = str(v)
     except Exception as e:
-        logger.error(f"Failed to parse task_secrets for script {script.id}: {e}")
+        logger.error(f"Failed to parse task_secrets for script {script_data['id']}: {e}")
 
     internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
     env_vars["FLUX_TOKEN"] = internal_token
     env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000"
-    env_vars["FLUX_SCRIPT_ID"] = str(script.id)  # 注入脚本ID供更新任务Secrets使用
+    env_vars["FLUX_SCRIPT_ID"] = str(script_data['id'])  # 注入脚本ID供更新任务Secrets使用
     env_vars["PYTHONUNBUFFERED"] = "1"
     env_vars["GITHUB_ACTIONS"] = "true" # 模拟 GitHub Actions 环境
     
@@ -350,8 +382,6 @@ except: pass
         update_db("Error")
 
     steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
-    update_db(script.last_status)
-    db.close()
 
 def add_job_to_scheduler(script: Script):
     try: scheduler.remove_job(str(script.id))

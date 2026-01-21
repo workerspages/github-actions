@@ -174,7 +174,26 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
             
             if needs_playwright:
                 logs.append("Detected playwright dependency, using system Python (pre-installed)")
-                logs.append("Skipping venv creation to reuse Docker's pre-installed browsers")
+                logs.append("Skipping venv to reuse Docker's pre-installed browsers")
+                
+                # 过滤掉 playwright，安装其他依赖到系统级
+                other_deps = []
+                for line in requirements.strip().split('\n'):
+                    dep = line.strip().lower()
+                    if dep and 'playwright' not in dep:
+                        other_deps.append(line.strip())
+                
+                if other_deps:
+                    logs.append(f"Installing additional deps: {', '.join(other_deps)}")
+                    # 使用 pip3 安装到系统级（Docker 容器内可以直接安装）
+                    cmd = ["/usr/bin/pip3", "install", "--break-system-packages"] + other_deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+                    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = await proc.communicate()
+                    if stdout: logs.append(stdout.decode())
+                    if stderr: logs.append(stderr.decode())
+                    if proc.returncode != 0:
+                        logs.append("Warning: Some deps may have failed, but continuing with system Python")
+                
                 return "/usr/bin/python3", "\n".join(logs), time.time() - start_time
             
             # 其他任务继续使用 venv 隔离

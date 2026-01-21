@@ -164,6 +164,15 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
 
     try:
         if runtime == "python":
+            # 检测是否需要 playwright（使用系统级 Python，复用 Docker 预装的浏览器）
+            needs_playwright = requirements and "playwright" in requirements.lower()
+            
+            if needs_playwright:
+                logs.append("Detected playwright dependency, using system Python (pre-installed)")
+                logs.append("Skipping venv creation to reuse Docker's pre-installed browsers")
+                return "/usr/bin/python3", "\n".join(logs), time.time() - start_time
+            
+            # 其他任务继续使用 venv 隔离
             python_exec = os.path.join(env_dir, "bin", "python")
             if not os.path.exists(python_exec):
                 logs.append("Creating Python venv...")

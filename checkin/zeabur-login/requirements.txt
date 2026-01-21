@@ -1,0 +1,4 @@
+
+playwright
+pynacl
+requests

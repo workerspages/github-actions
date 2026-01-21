@@ -10,3 +10,4 @@ loguru
 requests
 python-multipart
 pymysql
+pynacl

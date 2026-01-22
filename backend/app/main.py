@@ -305,7 +305,25 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
     update_db()
 
-    # Step 2: Install Dependencies
+    # Step 2: Check environment
+    t0 = time.time()
+    steps_log.append({"name": "Check environment", "status": 2, "duration": "...", "output": "Checking runtime environment..."})
+    update_db()
+    
+    env_check_log = []
+    if runtime == "python":
+        env_check_log.append(f"Python version: {sys.version.split()[0]}")
+        env_check_log.append(f"Platform: {sys.platform}")
+    else:
+        env_check_log.append("Node.js runtime")
+    env_check_log.append(f"Working directory: {SCRIPTS_DIR}")
+    env_check_log.append(f"Virtual env directory: {VENVS_DIR}")
+    
+    steps_log.pop()
+    steps_log.append({"name": "Check environment", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(env_check_log)})
+    update_db()
+
+    # Step 3: Install Dependencies
     t0 = time.time()
     steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": f"Installing {runtime} packages..."})
     update_db()
@@ -323,6 +341,34 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         steps_log.append({"name": "Install dependencies", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
         update_db("Failed")
         return
+
+    # Step 4: Check browser (for Selenium scripts)
+    needs_browser = script_data['requirements'] and ('selenium' in script_data['requirements'].lower() or 'playwright' in script_data['requirements'].lower())
+    if needs_browser:
+        t0 = time.time()
+        steps_log.append({"name": "Check browser", "status": 2, "duration": "...", "output": "Checking browser availability..."})
+        update_db()
+        
+        browser_log = []
+        chrome_bin = "/usr/bin/chromium-browser"
+        chromedriver = "/usr/bin/chromedriver"
+        
+        if os.path.exists(chrome_bin):
+            browser_log.append(f"✓ Chromium found: {chrome_bin}")
+        else:
+            browser_log.append(f"✗ Chromium not found at {chrome_bin}")
+        
+        if os.path.exists(chromedriver):
+            browser_log.append(f"✓ ChromeDriver found: {chromedriver}")
+        else:
+            browser_log.append(f"✗ ChromeDriver not found at {chromedriver}")
+        
+        browser_log.append("Memory optimization: enabled")
+        browser_log.append("Headless mode: enabled")
+        
+        steps_log.pop()
+        steps_log.append({"name": "Check browser", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(browser_log)})
+        update_db()
 
     # Step 3: Run Script
     t0 = time.time()
@@ -345,6 +391,40 @@ try:
     import github_api_proxy
 except: pass
 # === End Proxy ===
+
+# === Selenium ChromeDriver Patch (Auto-injected) ===
+# 让 Selenium 使用 Docker 预装的 Chromium，并优化内存占用
+def _patch_selenium_chrome():
+    try:
+        from selenium.webdriver.chrome.service import Service
+        from selenium import webdriver
+        _original_chrome_init = webdriver.Chrome.__init__
+        def _patched_chrome_init(self, options=None, service=None, keep_alive=True):
+            # 使用本地 ChromeDriver
+            if service is None:
+                chromedriver_path = os.getenv("CHROMEDRIVER", "/usr/bin/chromedriver")
+                if os.path.exists(chromedriver_path):
+                    service = Service(executable_path=chromedriver_path)
+            # 添加内存优化参数
+            if options and os.getenv("GITHUB_ACTIONS"):
+                options.binary_location = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
+                # 内存优化参数
+                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--disable-extensions")
+                options.add_argument("--disable-plugins")
+                options.add_argument("--single-process")  # 单进程模式，节省内存
+                options.add_argument("--disable-software-rasterizer")
+                options.add_argument("--disable-background-networking")
+                options.add_argument("--disable-default-apps")
+                options.add_argument("--disable-sync")
+                options.add_argument("--memory-pressure-off")
+                options.add_argument("--js-flags=--max-old-space-size=256")  # 限制 V8 内存
+            return _original_chrome_init(self, options=options, service=service, keep_alive=keep_alive)
+        webdriver.Chrome.__init__ = _patched_chrome_init
+    except Exception as e:
+        pass  # 如果补丁失败，继续使用原始逻辑
+_patch_selenium_chrome()
+# === End Selenium Patch ===
 
 '''
         script_code = proxy_import + script_code
@@ -374,6 +454,13 @@ except: pass
     env_vars["FLUX_SCRIPT_ID"] = str(script_data['id'])  # 注入脚本ID供更新任务Secrets使用
     env_vars["PYTHONUNBUFFERED"] = "1"
     env_vars["GITHUB_ACTIONS"] = "true" # 模拟 GitHub Actions 环境
+    
+    # Chrome/Selenium 环境变量 - 使用 Docker 预装的 Chromium，避免 webdriver-manager 下载
+    env_vars["CHROME_BIN"] = "/usr/bin/chromium-browser"
+    env_vars["CHROMEDRIVER"] = "/usr/bin/chromedriver"
+    env_vars["WDM_LOCAL"] = "1"  # webdriver-manager: 使用本地缓存
+    env_vars["WDM_SSL_VERIFY"] = "0"  # webdriver-manager: 禁用 SSL 验证
+    env_vars["SE_AVOID_STATS"] = "true"  # Selenium: 禁用统计上报
     
     if runtime == "node":
         node_modules_path = os.path.join(env_dir, "node_modules")

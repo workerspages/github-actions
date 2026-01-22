@@ -37,6 +37,7 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 SCRIPTS_DIR = "/app/scripts"
 VENVS_DIR = "/app/data/venvs"
 STATIC_DIR = "/app/static"
+SCRIPT_TIMEOUT_SECONDS = int(os.getenv("SCRIPT_TIMEOUT", "7200"))  # 默认 2 小时超时
 
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
 os.makedirs(VENVS_DIR, exist_ok=True)
@@ -390,11 +391,20 @@ except: pass
             stdout=subprocess.PIPE, 
             stderr=subprocess.PIPE
         )
-        stdout, stderr = await proc.communicate()
-        
-        steps_log.pop()
-        steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
-        update_db("Success" if proc.returncode == 0 else "Failed")
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), 
+                timeout=SCRIPT_TIMEOUT_SECONDS
+            )
+            steps_log.pop()
+            steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
+            update_db("Success" if proc.returncode == 0 else "Failed")
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            steps_log.pop()
+            steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": f"Script execution timed out after {SCRIPT_TIMEOUT_SECONDS}s"})
+            update_db("Timeout")
     except Exception as e:
         steps_log.pop()
         steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
@@ -518,6 +528,17 @@ def delete_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_c
 @app.post("/api/scripts/{script_id}/run")
 async def run_now(script_id: int, u=Depends(get_current_user)):
     asyncio.create_task(run_script_task(script_id, 0)); return {"status": "triggered"}
+
+@app.post("/api/scripts/{script_id}/cancel")
+def cancel_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
+    """手动将卡住的任务状态重置为 Cancelled"""
+    script = db.query(Script).filter(Script.id == script_id).first()
+    if not script:
+        raise HTTPException(status_code=404)
+    if script.last_status == "Running":
+        script.last_status = "Cancelled"
+        db.commit()
+    return {"status": "cancelled"}
 
 @app.get("/api/secrets", response_model=List[SecretResponse])
 def get_secrets(db: Session = Depends(get_db), u=Depends(get_current_user)):

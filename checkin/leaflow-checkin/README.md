@@ -60,6 +60,7 @@ Telegram 通知配置
 | `LEAFLOW_ACCOUNTS` | 否* | 多个账号密码，逗号分隔（方式二,推荐） |
 | `TELEGRAM_BOT_TOKEN` | 否 | Telegram Bot Token |
 | `TELEGRAM_CHAT_ID` | 否 | Telegram Chat ID |
+| `PUSHPLUS_TOKEN` | 否 | PUSHPLUS 通知  |
 
 *注：以上账号配置方式至少需要配置一种
 
@@ -78,6 +79,7 @@ GPL 3.0
 * 禁止新建项目将代码复制到自己仓库中用做商业行为，违者必究
 * 用于商业行为的任何分支必须完整保留本项目说明，违者必究
 * 请遵守当地法律法规,禁止滥用做公共代理行为
+
 
 
 

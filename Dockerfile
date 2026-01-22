@@ -49,11 +49,22 @@ RUN pip3 install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.
 # 现在 playwright 命令一定存在了
 RUN playwright install --with-deps
 
-# 5. 复制程序代码
+# 5. 【新增】安装 Chrome/ChromeDriver 支持 Selenium 脚本（如 Leaflow 签到）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    chromium-browser chromium-chromedriver \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+    # 安装 Selenium 相关 Python 包
+    && pip3 install --no-cache-dir selenium webdriver-manager -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 设置 ChromeDriver 路径环境变量
+ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
+ENV CHROME_BIN=/usr/bin/chromium-browser
+
+# 6. 复制程序代码
 COPY backend/app /app/app
 COPY --from=frontend-builder /build/dist /app/static
 
-# 6. 创建数据目录
+# 7. 创建数据目录
 RUN mkdir -p /app/data /app/scripts /app/data/venvs
 
 ENV PYTHONPATH=/app

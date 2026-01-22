@@ -35,7 +35,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 3. 提取元数据 (Tags)
+      # 3. 设置 QEMU (用于多架构构建)
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      # 4. 设置 Docker Buildx
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 5. 提取元数据 (Tags)
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v4
@@ -48,11 +56,12 @@ jobs:
             type=sha,format=short
             type=ref,event=branch
 
-      # 4. 构建并推送
+      # 6. 构建并推送 (多架构)
       - name: Build and push Docker image
         uses: docker/build-push-action@v4
         with:
           context: .
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

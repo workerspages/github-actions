@@ -350,21 +350,38 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         update_db()
         
         browser_log = []
-        chrome_bin = "/usr/bin/chromium-browser"
+        chrome_bin = "/usr/bin/google-chrome"
         chromedriver = "/usr/bin/chromedriver"
         
         if os.path.exists(chrome_bin):
-            browser_log.append(f"✓ Chromium found: {chrome_bin}")
+            # 获取 Chrome 版本
+            try:
+                result = subprocess.run([chrome_bin, "--version"], capture_output=True, text=True)
+                chrome_version = result.stdout.strip()
+                browser_log.append(f"✓ Google Chrome: {chrome_version}")
+            except:
+                browser_log.append(f"✓ Google Chrome found: {chrome_bin}")
         else:
-            browser_log.append(f"✗ Chromium not found at {chrome_bin}")
+            browser_log.append(f"✗ Google Chrome not found at {chrome_bin}")
         
         if os.path.exists(chromedriver):
-            browser_log.append(f"✓ ChromeDriver found: {chromedriver}")
+            try:
+                result = subprocess.run([chromedriver, "--version"], capture_output=True, text=True)
+                driver_version = result.stdout.strip()
+                browser_log.append(f"✓ ChromeDriver: {driver_version}")
+            except:
+                browser_log.append(f"✓ ChromeDriver found: {chromedriver}")
         else:
             browser_log.append(f"✗ ChromeDriver not found at {chromedriver}")
         
-        browser_log.append("Memory optimization: enabled")
-        browser_log.append("Headless mode: enabled")
+        # 检查 Xvfb
+        xvfb_available = shutil.which("xvfb-run") is not None
+        if xvfb_available:
+            browser_log.append("✓ Xvfb virtual display: available")
+        else:
+            browser_log.append("⚠ Xvfb not found, using headless mode")
+        
+        browser_log.append("Environment: GitHub Actions compatible")
         
         steps_log.pop()
         steps_log.append({"name": "Check browser", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(browser_log)})
@@ -393,10 +410,11 @@ except: pass
 # === End Proxy ===
 
 # === Selenium ChromeDriver Patch (Auto-injected) ===
-# 让 Selenium 使用 Docker 预装的 Chromium，并优化内存占用
+# 让 Selenium 使用 Docker 预装的 Google Chrome，与 GitHub Actions 官方环境一致
 def _patch_selenium_chrome():
     try:
         from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.chrome.options import Options
         from selenium import webdriver
         _original_chrome_init = webdriver.Chrome.__init__
         def _patched_chrome_init(self, options=None, service=None, keep_alive=True):
@@ -405,20 +423,26 @@ def _patch_selenium_chrome():
                 chromedriver_path = os.getenv("CHROMEDRIVER", "/usr/bin/chromedriver")
                 if os.path.exists(chromedriver_path):
                     service = Service(executable_path=chromedriver_path)
-            # 添加内存优化参数
-            if options and os.getenv("GITHUB_ACTIONS"):
-                options.binary_location = os.getenv("CHROME_BIN", "/usr/bin/chromium-browser")
-                # 内存优化参数
-                options.add_argument("--disable-dev-shm-usage")
-                options.add_argument("--disable-extensions")
-                options.add_argument("--disable-plugins")
-                options.add_argument("--single-process")  # 单进程模式，节省内存
-                options.add_argument("--disable-software-rasterizer")
-                options.add_argument("--disable-background-networking")
-                options.add_argument("--disable-default-apps")
-                options.add_argument("--disable-sync")
-                options.add_argument("--memory-pressure-off")
-                options.add_argument("--js-flags=--max-old-space-size=256")  # 限制 V8 内存
+            # 如果没有传入 options，创建一个
+            if options is None:
+                options = Options()
+            # 设置 Chrome 路径 (Google Chrome)
+            chrome_bin = os.getenv("CHROME_BIN", "/usr/bin/google-chrome")
+            if os.path.exists(chrome_bin):
+                options.binary_location = chrome_bin
+            # Docker 容器内必需的参数
+            options.add_argument("--no-sandbox")  # Docker 容器内必需
+            options.add_argument("--disable-dev-shm-usage")  # 配合 shm_size 使用
+            # 如果没有 DISPLAY 环境变量（无 Xvfb），则使用 headless 模式
+            if not os.getenv("DISPLAY"):
+                options.add_argument("--headless=new")
+            # 通用优化参数
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+            options.add_argument("--disable-extensions")
+            options.add_argument("--disable-background-networking")
+            options.add_argument("--disable-default-apps")
+            options.add_argument("--disable-sync")
             return _original_chrome_init(self, options=options, service=service, keep_alive=keep_alive)
         webdriver.Chrome.__init__ = _patched_chrome_init
     except Exception as e:
@@ -455,9 +479,10 @@ _patch_selenium_chrome()
     env_vars["PYTHONUNBUFFERED"] = "1"
     env_vars["GITHUB_ACTIONS"] = "true" # 模拟 GitHub Actions 环境
     
-    # Chrome/Selenium 环境变量 - 使用 Docker 预装的 Chromium，避免 webdriver-manager 下载
-    env_vars["CHROME_BIN"] = "/usr/bin/chromium-browser"
+    # Chrome/Selenium 环境变量 - 与 GitHub Actions 官方环境一致
+    env_vars["CHROME_BIN"] = "/usr/bin/google-chrome"
     env_vars["CHROMEDRIVER"] = "/usr/bin/chromedriver"
+    env_vars["DISPLAY"] = ":99"  # Xvfb 虚拟显示
     env_vars["WDM_LOCAL"] = "1"  # webdriver-manager: 使用本地缓存
     env_vars["WDM_SSL_VERIFY"] = "0"  # webdriver-manager: 禁用 SSL 验证
     env_vars["SE_AVOID_STATS"] = "true"  # Selenium: 禁用统计上报
@@ -467,10 +492,19 @@ _patch_selenium_chrome()
         env_vars["NODE_PATH"] = node_modules_path
     
     try:
+        # 对需要浏览器的脚本使用 xvfb-run 启动虚拟显示
+        use_xvfb = needs_browser and shutil.which("xvfb-run") is not None
+        
         if runtime == "node":
-            cmd_args = ["node", file_path]
+            if use_xvfb:
+                cmd_args = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", "node", file_path]
+            else:
+                cmd_args = ["node", file_path]
         else:
-            cmd_args = [exec_cmd, file_path]
+            if use_xvfb:
+                cmd_args = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", exec_cmd, file_path]
+            else:
+                cmd_args = [exec_cmd, file_path]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd_args, 

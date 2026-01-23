@@ -6,6 +6,7 @@ services:
     container_name: github-actions
     restart: unless-stopped
     user: "0:0"
+    shm_size: '2gb'  # 解决 Chrome 共享内存不足问题
     ports:
       - "8000:8000"
     volumes:

@@ -49,16 +49,35 @@ RUN pip3 install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.
 # 现在 playwright 命令一定存在了
 RUN playwright install --with-deps
 
-# 5. 【新增】安装 Chrome/ChromeDriver 支持 Selenium 脚本（如 Leaflow 签到）
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium-browser chromium-chromedriver \
-    && apt-get clean && rm -rf /var/lib/apt/lists/* \
+# 5. 安装 Google Chrome + ChromeDriver (与 GitHub Actions 官方环境一致)
+# 安装 Xvfb 虚拟显示服务器，允许非 headless 模式运行
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xvfb \
+    # 添加 Google Chrome 官方源
+    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
+    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# 安装匹配版本的 ChromeDriver
+RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') \
+    && echo "Chrome version: $CHROME_VERSION" \
+    && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION%%.*}") \
+    && echo "ChromeDriver version: $DRIVER_VERSION" \
+    && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
+    && unzip /tmp/chromedriver.zip -d /tmp \
+    && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+    && chmod +x /usr/bin/chromedriver \
+    && rm -rf /tmp/chromedriver* \
     # 安装 Selenium 相关 Python 包
     && pip3 install --no-cache-dir selenium webdriver-manager -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 设置 ChromeDriver 路径环境变量
+# 设置 Chrome 环境变量 (与 GitHub Actions 一致)
+ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-ENV CHROME_BIN=/usr/bin/chromium-browser
+# Xvfb 显示配置
+ENV DISPLAY=:99
 
 # 6. 复制程序代码
 COPY backend/app /app/app

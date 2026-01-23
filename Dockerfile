@@ -51,34 +51,39 @@ RUN playwright install --with-deps
 
 # 5. 安装 Google Chrome + ChromeDriver (与 GitHub Actions 官方环境一致)
 # 安装 Xvfb 虚拟显示服务器，允许非 headless 模式运行
-# 5. 安装 Google Chrome + ChromeDriver (与 GitHub Actions 官方环境一致)
-# 安装 Xvfb 虚拟显示服务器，允许非 headless 模式运行
+# 5. 安装浏览器 (支持多架构)
+# 定义构建参数 (由 docker buildx 自动填充)
+ARG TARGETARCH
+
+# 安装 Xvfb 和基础依赖
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb wget ca-certificates \
-    # 直接下载并安装 Google Chrome (让 apt 自动解决依赖)
-    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb \
-    && apt-get install -y /tmp/chrome.deb \
-    && rm /tmp/chrome.deb \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
-
-# 安装匹配版本的 ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
-    && CHROME_MAJOR=${CHROME_VERSION%%.*} \
-    && echo "Chrome version: $CHROME_VERSION (major: $CHROME_MAJOR)" \
-    && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_MAJOR}") \
-    && echo "ChromeDriver version: $DRIVER_VERSION" \
-    && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
-    && unzip /tmp/chromedriver.zip -d /tmp \
-    && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
-    && chmod +x /usr/bin/chromedriver \
-    && rm -rf /tmp/chromedriver* \
-    # 安装 Selenium 相关 Python 包
+    && if [ "$TARGETARCH" = "amd64" ]; then \
+        echo "Installing Google Chrome for AMD64..." \
+        && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb \
+        && apt-get install -y /tmp/chrome.deb \
+        && rm /tmp/chrome.deb \
+        # 获取匹配的 ChromeDriver
+        && CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
+        && CHROME_MAJOR=${CHROME_VERSION%%.*} \
+        && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_MAJOR}") \
+        && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
+        && unzip /tmp/chromedriver.zip -d /tmp \
+        && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+        && chmod +x /usr/bin/chromedriver \
+        && rm -rf /tmp/chromedriver*; \
+    else \
+        echo "Installing Chromium for ARM64/Other..." \
+        && apt-get install -y --no-install-recommends chromium-browser chromium-chromedriver \
+        # 创建兼容性符号链接，伪装成 google-chrome
+        && ln -s /usr/bin/chromium-browser /usr/bin/google-chrome; \
+    fi \
+    && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir selenium webdriver-manager -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# 设置 Chrome 环境变量 (与 GitHub Actions 一致)
+# 设置环境变量 (即使是 Chromium 也伪装成 Google Chrome 路径以保持一致性)
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
-# Xvfb 显示配置
 ENV DISPLAY=:99
 
 # 6. 复制程序代码

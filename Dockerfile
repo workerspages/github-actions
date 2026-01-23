@@ -52,18 +52,20 @@ RUN playwright install --with-deps
 # 5. 安装 Google Chrome + ChromeDriver (与 GitHub Actions 官方环境一致)
 # 安装 Xvfb 虚拟显示服务器，允许非 headless 模式运行
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb \
-    # 添加 Google Chrome 官方源
-    && wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" >> /etc/apt/sources.list.d/google.list \
-    && apt-get update \
-    && apt-get install -y google-chrome-stable \
+    && apt-get install -y --no-install-recommends xvfb fonts-liberation libasound2 libatk-bridge2.0-0 \
+       libatk1.0-0 libatspi2.0-0 libcups2 libdbus-1-3 libdrm2 libgbm1 libgtk-3-0 \
+       libnspr4 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxkbcommon0 libxrandr2 xdg-utils \
+    # 直接下载并安装 Google Chrome (避免 apt-key 过时问题)
+    && wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -O /tmp/chrome.deb \
+    && apt-get install -y /tmp/chrome.deb \
+    && rm /tmp/chrome.deb \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # 安装匹配版本的 ChromeDriver
-RUN CHROME_VERSION=$(google-chrome --version | grep -oP '\d+\.\d+\.\d+') \
-    && echo "Chrome version: $CHROME_VERSION" \
-    && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_VERSION%%.*}") \
+RUN CHROME_VERSION=$(google-chrome --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+') \
+    && CHROME_MAJOR=${CHROME_VERSION%%.*} \
+    && echo "Chrome version: $CHROME_VERSION (major: $CHROME_MAJOR)" \
+    && DRIVER_VERSION=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_${CHROME_MAJOR}") \
     && echo "ChromeDriver version: $DRIVER_VERSION" \
     && wget -q "https://storage.googleapis.com/chrome-for-testing-public/${DRIVER_VERSION}/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip \
     && unzip /tmp/chromedriver.zip -d /tmp \

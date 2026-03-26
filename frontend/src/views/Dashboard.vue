@@ -129,36 +129,55 @@
           <n-divider />
           
           <n-alert type="info" :show-icon="false" title="提示">
-            <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
-            <p style="font-size: 12px; color: #aaa">可在 "Secrets 管理" 标签页设置此任务独享的环境变量，优先级高于全局设置。</p>
-            <n-divider style="margin: 6px 0" />
             
-            <p>依赖管理: 请在右侧 <b>"依赖"</b> 标签页填写 <n-text code>requirements.txt</n-text> (Python) 或包名 (Node.js)。</p>
-            <n-divider style="margin: 6px 0" />
-            
-            <p>如果出错: 删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
-            <n-divider style="margin: 6px 0" />
-            
-            <p>🌐 <b>Playwright 推荐启动参数：</b></p>
-            <div style="background: #1e1e1e; padding: 12px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; margin: 6px 0; overflow-x: auto; line-height: 1.5; color: #d4d4d4;">
-              <div style="color: #6a9955;">// --- 修改重点区域开始 ---</div>
-              <div><span style="color: #c678dd;">const</span> <span style="color: #9cdcfe;">browser</span> = <span style="color: #c678dd;">await</span> <span style="color: #9cdcfe;">chromium</span>.<span style="color: #dcdcaa;">launch</span>({</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">headless</span>: <span style="color: #56b6c2;">true</span>,</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">channel</span>: <span style="color: #ce9178;">'chrome'</span>, <span style="color: #6a9955;">// 明确指定使用系统自带的 Google Chrome</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">args</span>: [</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--no-sandbox'</span>,</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-setuid-sandbox'</span>,</div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-dev-shm-usage'</span>, <span style="color: #6a9955;">// 额外加一条，防止 Docker 环境内存不足导致崩溃</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-gpu'</span></div>
-              <div>&nbsp;&nbsp;&nbsp;&nbsp;]</div>
-              <div>});</div>
-              <div style="color: #6a9955;">// --- 修改重点区域结束 ---</div>
+            <div style="margin-bottom: 16px;">
+              <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">🔐 Secrets 环境变量</p>
+              <div style="background: #1e1e1e; padding: 10px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; color: #d4d4d4;">
+                <span style="color: #9cdcfe;">os</span>.<span style="color: #9cdcfe;">environ</span>[<span style="color: #ce9178;">'KEY'</span>]
+              </div>
+              <p style="margin: 6px 0 0 0; font-size: 11px; color: #aaa;">可在 "Secrets 管理" 标签页设置此任务独享的环境变量，优先级高于全局设置。</p>
             </div>
-            <n-divider style="margin: 6px 0" />
             
-            <p>🐍模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
-            <n-divider style="margin: 6px 0" />
-            <p>🟢模式 B: Node.js 脚本：在代码第一行写上魔法注释：<n-text code>// runtime: node</n-text></p>
+            <div style="margin-bottom: 16px;">
+              <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">📦 依赖管理</p>
+              <p style="margin: 0; font-size: 11px; color: #aaa;">请在右侧 <b>"依赖"</b> 标签页填写 <span style="background: #1e1e1e; color: #ce9178; padding: 2px 6px; border-radius: 4px; font-family: 'Fira Code', Consolas, monospace;">requirements.txt</span> (Python) 或包名 (Node.js)。</p>
+            </div>
+            
+            <div style="margin-bottom: 16px;">
+              <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">🐛 如果出错</p>
+              <p style="margin: 0 0 6px 0; font-size: 11px; color: #aaa;">请尝试删除代码中的此行判断：</p>
+              <div style="background: #1e1e1e; padding: 10px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; color: #d4d4d4;">
+                <span style="color: #c678dd;">if</span> <span style="color: #9cdcfe;">os</span>.<span style="color: #dcdcaa;">getenv</span>(<span style="color: #ce9178;">'GITHUB_ACTIONS'</span>):
+              </div>
+            </div>
+
+            <div style="margin-bottom: 16px;">
+              <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">🔄 运行模式 (Python / Node.js)</p>
+              <p style="margin: 0 0 6px 0; font-size: 11px; color: #aaa;">默认执行 <b>Python</b>。若要执行 <b>Node.js</b>，需在首行添加魔法注释：</p>
+              <div style="background: #1e1e1e; padding: 10px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; color: #d4d4d4;">
+                <span style="color: #6a9955;">// runtime: node</span>
+              </div>
+            </div>
+
+            <div>
+              <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">🌐 Playwright 推荐参数</p>
+              <p style="margin: 0 0 6px 0; font-size: 11px; color: #aaa;">Docker root 环境必须加参数：</p>
+              <div style="background: #1e1e1e; padding: 12px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; overflow-x: auto; line-height: 1.5; color: #d4d4d4;">
+                <div style="color: #6a9955;">// --- 修改重点区域开始 ---</div>
+                <div><span style="color: #c678dd;">const</span> <span style="color: #9cdcfe;">browser</span> = <span style="color: #c678dd;">await</span> <span style="color: #9cdcfe;">chromium</span>.<span style="color: #dcdcaa;">launch</span>({</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">headless</span>: <span style="color: #56b6c2;">true</span>,</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">channel</span>: <span style="color: #ce9178;">'chrome'</span>, <span style="color: #6a9955;">// 明确指定使用内置 Chrome</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">args</span>: [</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--no-sandbox'</span>,</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-setuid-sandbox'</span>,</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-dev-shm-usage'</span>, <span style="color: #6a9955;">// 防止内存崩溃</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-gpu'</span></div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;]</div>
+                <div>});</div>
+                <div style="color: #6a9955;">// --- 修改重点区域结束 ---</div>
+              </div>
+            </div>
+
           </n-alert>
 
         </n-form>

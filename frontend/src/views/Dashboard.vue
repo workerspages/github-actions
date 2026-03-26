@@ -1,6 +1,5 @@
 <template>
   <n-layout has-sider style="height: 100vh">
-    <!-- 侧边栏 -->
     <n-layout-sider bordered width="220" content-style="padding: 24px;" style="background-color: #18181c;">
       <div class="logo">GitHub Actions</div>
       <n-menu :options="menuOptions" :value="activeMenu" @update:value="handleMenuClick" />
@@ -11,7 +10,6 @@
     </n-layout-sider>
 
     <n-layout>
-      <!-- 顶部 Header -->
       <n-layout-header bordered class="header">
         <div class="header-title">任务列表</div>
         <n-space>
@@ -25,7 +23,6 @@
         </n-space>
       </n-layout-header>
 
-      <!-- 内容区域 -->
       <n-layout-content class="content-bg" content-style="padding: 24px;">
         <n-grid :x-gap="24" :y-gap="24" cols="1 800:2 1200:3 1600:4">
           <n-grid-item v-for="script in scripts" :key="script.id">
@@ -33,7 +30,6 @@
               <template #header>
                 <div class="card-header">
                   <span class="script-name">{{ script.name }}</span>
-                  <!-- 状态显示优化 -->
                   <n-tag v-if="!script.is_active" size="small" type="warning" bordered>已暂停</n-tag>
                   <n-tag v-else size="small" :type="getStatusType(script.last_status)">
                     {{ script.last_status || 'Wait' }}
@@ -44,7 +40,6 @@
               <div class="card-body">
                 <div class="info-row">
                   <n-icon><time-icon /></n-icon>
-                  <!-- 如果暂停，显示暂停提示，否则显示 cron -->
                   <span :style="{ textDecoration: !script.is_active ? 'line-through' : 'none' }">
                     {{ script.cron || script.cron_exp }}
                   </span>
@@ -65,7 +60,6 @@
                     日志
                   </n-button>
                   
-                  <!-- 暂停/恢复 按钮 -->
                   <n-tooltip trigger="hover">
                     <template #trigger>
                       <n-button size="small" circle secondary :type="script.is_active ? 'warning' : 'success'" @click="toggleScriptStatus(script)">
@@ -104,7 +98,6 @@
     </n-layout>
   </n-layout>
 
-  <!-- 编辑/新建 模态框 -->
   <n-modal 
     v-model:show="showModal" 
     preset="card" 
@@ -115,7 +108,6 @@
     content-style="padding: 0; overflow: hidden;"
   >
     <n-layout has-sider style="height: 100%">
-      <!-- 左侧：设置 -->
       <n-layout-sider 
         width="320" 
         bordered 
@@ -136,7 +128,6 @@
           </n-form-item>
           <n-divider />
           
-          <!-- 提示说明信息 -->
           <n-alert type="info" :show-icon="false" title="提示">
             <p>Secrets: <n-text code>os.environ['KEY']</n-text></p>
             <p style="font-size: 12px; color: #aaa">可在 "Secrets 管理" 标签页设置此任务独享的环境变量，优先级高于全局设置。</p>
@@ -148,7 +139,21 @@
             <p>如果出错: 删除脚本<b>"Python"</b>代码 中的 <n-text code>if os.getenv('GITHUB_ACTIONS'):</n-text> 此行代码。</p>
             <n-divider style="margin: 6px 0" />
             
-            <p>⚠️注意: Docker 容器默认是 root 用户，Chrome 限制 root 必须加 <n-text code>args=['--no-sandbox']</n-text></p>
+            <p>🌐 <b>Playwright 推荐启动参数：</b></p>
+            <div style="background: #1e1e1e; padding: 12px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; margin: 6px 0; overflow-x: auto; line-height: 1.5; color: #d4d4d4;">
+              <div style="color: #6a9955;">// --- 修改重点区域开始 ---</div>
+              <div><span style="color: #c678dd;">const</span> <span style="color: #9cdcfe;">browser</span> = <span style="color: #c678dd;">await</span> <span style="color: #9cdcfe;">chromium</span>.<span style="color: #dcdcaa;">launch</span>({</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">headless</span>: <span style="color: #56b6c2;">true</span>,</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">channel</span>: <span style="color: #ce9178;">'chrome'</span>, <span style="color: #6a9955;">// 明确指定使用系统自带的 Google Chrome</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #9cdcfe;">args</span>: [</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--no-sandbox'</span>,</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-setuid-sandbox'</span>,</div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-dev-shm-usage'</span>, <span style="color: #6a9955;">// 额外加一条，防止 Docker 环境内存不足导致崩溃</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #ce9178;">'--disable-gpu'</span></div>
+              <div>&nbsp;&nbsp;&nbsp;&nbsp;]</div>
+              <div>});</div>
+              <div style="color: #6a9955;">// --- 修改重点区域结束 ---</div>
+            </div>
             <n-divider style="margin: 6px 0" />
             
             <p>🐍模式 A: Python 脚本 (默认): 直接写 <n-text code>Python</n-text> 代码。</p>
@@ -159,15 +164,12 @@
         </n-form>
       </n-layout-sider>
 
-      <!-- 右侧：Tabs (代码 | 依赖 | Secrets) -->
       <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
         <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;">
-          <!-- Tab 1: 代码 -->
           <n-tab-pane name="code" tab="Python 代码" style="height: 100%; padding: 0;">
              <Editor v-model="form.code" style="height: 100%;" />
           </n-tab-pane>
           
-          <!-- Tab 2: 依赖 -->
           <n-tab-pane name="requirements" tab="依赖 (Requirements.txt)" display-directive="show" style="height: 100%; padding: 0;">
             <div style="height: 100%; display: flex; flex-direction: column;">
               <div style="padding: 12px; background: #2d2d30; color: #aaa; font-size: 12px; border-bottom: 1px solid #333;">
@@ -183,7 +185,6 @@
             </div>
           </n-tab-pane>
 
-          <!-- Tab 3: Secrets 管理 (新增) -->
           <n-tab-pane name="secrets" tab="Secrets 管理" display-directive="show" style="height: 100%; padding: 0;">
             <div style="padding: 24px; height: 100%; overflow-y: auto;">
               <n-space vertical size="large">
@@ -221,7 +222,6 @@
     </template>
   </n-modal>
 
-  <!-- 日志抽屉 (保持不变) -->
   <n-drawer v-model:show="showLogDrawer" width="800" placement="right">
     <n-drawer-content :title="currentLogScript?.name + ' - 执行日志'" closable body-style="padding: 0; background-color: #0d1117;">
       <template #header-extra>

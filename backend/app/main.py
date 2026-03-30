@@ -222,11 +222,24 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
                 subprocess.run(["npm", "init", "-y"], cwd=env_dir, check=True, stdout=subprocess.DEVNULL)
             
             if requirements and requirements.strip():
-                deps = requirements.replace("\n", " ").split()
-                deps = [d.strip() for d in deps if d.strip()]
-                if deps:
-                    logs.append(f"Installing Node deps: {', '.join(deps)}")
-                    cmd = ["npm", "install"] + deps
+                req_str = requirements.strip()
+                
+                # Check if it looks like a package.json JSON string
+                if req_str.startswith("{"):
+                    logs.append("Installing Node deps from package.json")
+                    with open(pkg_file, "w") as f:
+                        f.write(req_str)
+                    cmd = ["npm", "install"]
+                else:
+                    deps = req_str.replace("\n", " ").split()
+                    deps = [d.strip() for d in deps if d.strip()]
+                    if deps:
+                        logs.append(f"Installing Node deps: {', '.join(deps)}")
+                        cmd = ["npm", "install"] + deps
+                    else:
+                        cmd = []
+                
+                if cmd:
                     proc = await asyncio.create_subprocess_exec(*cmd, cwd=env_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     stdout, stderr = await proc.communicate()
                     if stdout: logs.append(stdout.decode())

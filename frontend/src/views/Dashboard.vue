@@ -118,6 +118,14 @@
           <n-form-item label="任务名称">
             <n-input v-model:value="form.name" placeholder="例如: 京东签到" />
           </n-form-item>
+          <n-form-item label="运行环境">
+            <n-radio-group v-model:value="form.runtime" name="runtime_group">
+              <n-space>
+                <n-radio value="python">Python</n-radio>
+                <n-radio value="node">Node.js</n-radio>
+              </n-space>
+            </n-radio-group>
+          </n-form-item>
           <n-form-item label="Cron 表达式">
             <n-input v-model:value="form.cron" placeholder="0 8 * * *" />
             <n-text depth="3" style="font-size: 12px;">格式: 分 时 日 月 周</n-text>
@@ -153,10 +161,7 @@
 
             <div style="margin-bottom: 16px;">
               <p style="margin: 0 0 6px 0; font-weight: 600; color: #e5e5e5;">🔄 运行模式 (Python / Node.js)</p>
-              <p style="margin: 0 0 6px 0; font-size: 11px; color: #aaa;">默认执行 <b>Python</b>。若要执行 <b>Node.js</b>，需在首行添加魔法注释：</p>
-              <div style="background: #1e1e1e; padding: 10px; border-radius: 6px; font-family: 'Fira Code', Consolas, monospace; font-size: 11px; color: #d4d4d4;">
-                <span style="color: #6a9955;">// runtime: node</span>
-              </div>
+              <p style="margin: 0 0 6px 0; font-size: 11px; color: #aaa;">可在上方选择运行环境。Node.js 和 Python 享有各自的依赖管理体验，前端会自动向 Node.js 注入 runtime 注释。</p>
             </div>
 
             <div>
@@ -185,20 +190,21 @@
 
       <n-layout-content content-style="height: 100%; display: flex; flex-direction: column;">
         <n-tabs type="line" animated style="height: 100%; display: flex; flex-direction: column;">
-          <n-tab-pane name="code" tab="Python 代码" style="height: 100%; padding: 0;">
-             <Editor v-model="form.code" style="height: 100%;" />
+          <n-tab-pane name="code" :tab="form.runtime === 'node' ? 'Node.js 代码' : 'Python 代码'" style="height: 100%; padding: 0;">
+             <Editor v-model="form.code" :language="form.runtime === 'node' ? 'javascript' : 'python'" style="height: 100%;" />
           </n-tab-pane>
           
-          <n-tab-pane name="requirements" tab="依赖 (Requirements.txt)" display-directive="show" style="height: 100%; padding: 0;">
+          <n-tab-pane name="requirements" :tab="form.runtime === 'node' ? '依赖 (package.json)' : '依赖 (Requirements.txt)'" display-directive="show" style="height: 100%; padding: 0;">
             <div style="height: 100%; display: flex; flex-direction: column;">
               <div style="padding: 12px; background: #2d2d30; color: #aaa; font-size: 12px; border-bottom: 1px solid #333;">
                 <n-icon style="vertical-align: middle; margin-right: 5px;"><key-icon /></n-icon>
-                请输入依赖包名称，每行一个。
+                <span v-if="form.runtime === 'python'">请输入依赖包名称，每行一个。</span>
+                <span v-else>请输入 package.json 内容或对象 (如 {"dependencies": {"axios": "^1.0"}})。</span>
               </div>
               <textarea 
                 v-model="form.requirements" 
                 class="simple-editor"
-                placeholder="# 在此处输入 requirements.txt 内容..."
+                :placeholder="form.runtime === 'node' ? '{\n  \'dependencies\': {\n    \'axios\': \'^1.0.0\'\n  }\n}' : '# 在此处输入 requirements.txt 内容...'"
                 spellcheck="false"
               ></textarea>
             </div>
@@ -280,7 +286,7 @@ import {
   NLayout, NLayoutSider, NLayoutHeader, NLayoutContent, NMenu, NAvatar, 
   NButton, NSpace, NIcon, NGrid, NGridItem, NCard, NTag, NPopconfirm, 
   NModal, NForm, NFormItem, NInput, NSlider, NText, NDivider, NAlert, NEmpty, useMessage,
-  NTabs, NTabPane, NDrawer, NDrawerContent, NTooltip
+  NTabs, NTabPane, NDrawer, NDrawerContent, NTooltip, NRadioGroup, NRadio
 } from 'naive-ui'
 import { 
   TimeOutline as TimeIcon, HourglassOutline as HourglassIcon, 
@@ -307,7 +313,7 @@ const currentLogScript = ref(null)
 const logSteps = ref([])
 
 // 表单数据，增加 task_secrets
-const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requirements: '', is_active: true })
+const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requirements: '', is_active: true, runtime: 'python' })
 // 本地编辑 Secrets 的临时数组
 const localSecrets = ref([])
 
@@ -412,7 +418,8 @@ const openCreateModal = () => {
     delay: 300, 
     code: 'import os\nfrom loguru import logger\n\nlogger.info("Task Start...")\n',
     requirements: '',
-    is_active: true
+    is_active: true,
+    runtime: 'python'
   }
   localSecrets.value = [] // 清空本地 Secrets
   showModal.value = true
@@ -421,13 +428,22 @@ const openCreateModal = () => {
 const editScript = (script) => {
   isEdit.value = true
   currentId.value = script.id
+  
+  let codeStr = script.code || ''
+  let runtime = 'python'
+  if (codeStr.trim().startsWith('// runtime: node')) {
+    runtime = 'node'
+    codeStr = codeStr.replace(/^\s*\/\/\s*runtime:\s*node\r?\n?/, '')
+  }
+
   form.value = { 
     name: script.name, 
     cron: script.cron || script.cron_exp, 
     delay: script.delay !== undefined ? script.delay : script.random_delay, 
-    code: script.code,
+    code: codeStr,
     requirements: script.requirements || '',
-    is_active: script.is_active
+    is_active: script.is_active,
+    runtime: runtime
   }
   
   // 解析 task_secrets JSON 字符串到本地数组
@@ -454,11 +470,22 @@ const saveData = async () => {
       if(item.key) secretsObj[item.key] = item.value
     })
 
+    let finalCode = form.value.code
+    if (form.value.runtime === 'node') {
+      if (!finalCode.trim().startsWith('// runtime: node')) {
+        finalCode = '// runtime: node\n' + finalCode
+      }
+    } else {
+      if (finalCode.trim().startsWith('// runtime: node')) {
+        finalCode = finalCode.replace(/^\s*\/\/\s*runtime:\s*node\r?\n?/, '')
+      }
+    }
+
     const payload = {
       name: form.value.name,
       cron: form.value.cron,
       delay: form.value.delay,
-      code: form.value.code,
+      code: finalCode,
       requirements: form.value.requirements,
       is_active: form.value.is_active,
       task_secrets: JSON.stringify(secretsObj) // 序列化

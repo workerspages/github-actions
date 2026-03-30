@@ -6,7 +6,13 @@
 import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
 import * as monaco from 'monaco-editor'
 
-const props = defineProps(['modelValue'])
+const props = defineProps({
+  modelValue: String,
+  language: {
+    type: String,
+    default: 'python'
+  }
+})
 const emit = defineEmits(['update:modelValue'])
 const editorContainer = ref(null)
 let editorInstance = null
@@ -16,7 +22,7 @@ const initEditor = () => {
 
   editorInstance = monaco.editor.create(editorContainer.value, {
     value: props.modelValue || '', 
-    language: 'python',
+    language: props.language,
     theme: 'vs-dark',
     
     // --- 核心修复配置 ---
@@ -68,6 +74,12 @@ onMounted(() => {
 watch(() => props.modelValue, (newValue) => {
   if (editorInstance && newValue !== editorInstance.getValue()) {
     editorInstance.setValue(newValue || '')
+  }
+})
+
+watch(() => props.language, (newLang) => {
+  if (editorInstance && newLang) {
+    monaco.editor.setModelLanguage(editorInstance.getModel(), newLang)
   }
 })
 

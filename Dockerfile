@@ -1,5 +1,5 @@
 # --- Stage 1: 前端构建 (保持不变) ---
-FROM node:18-alpine as frontend-builder
+FROM node:18-alpine AS frontend-builder
 WORKDIR /build
 RUN npm config set registry https://registry.npmmirror.com
 COPY frontend/package*.json ./
@@ -46,8 +46,8 @@ RUN pip3 install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.
     pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 4. 【核心步骤】安装 Playwright 浏览器内核及系统依赖
-# 现在 playwright 命令一定存在了
-RUN playwright install --with-deps
+# 仅安装 Chromium 及相关依赖即可，避免在 arm64 qemu 交叉编译下 WebKit 的媒体库导致 libc-bin 崩溃
+RUN playwright install --with-deps chromium
 
 # 5. 安装 Google Chrome + ChromeDriver (与 GitHub Actions 官方环境一致)
 # 安装 Xvfb 虚拟显示服务器，允许非 headless 模式运行

@@ -55,7 +55,7 @@
 
               <template #action>
                 <n-space justify="end">
-                  <n-button size="small" secondary @click="openLogDrawer(script)">
+                  <n-button size="small" secondary @click="openLogDrawer(script.id)">
                     <template #icon><n-icon><document-text-icon /></n-icon></template>
                     日志
                   </n-button>
@@ -79,7 +79,7 @@
                     确定要立即执行该脚本吗？
                   </n-popconfirm>
                   
-                  <n-button size="small" secondary type="warning" @click="editScript(script)">编辑</n-button>
+                  <n-button size="small" secondary type="warning" @click="editScript(script.id)">编辑</n-button>
                   
                   <n-popconfirm @positive-click="deleteScript(script.id)">
                     <template #trigger>
@@ -250,7 +250,7 @@
   <n-drawer v-model:show="showLogDrawer" width="800" placement="right">
     <n-drawer-content :title="currentLogScript?.name + ' - 执行日志'" closable body-style="padding: 0; background-color: #0d1117;">
       <template #header-extra>
-        <n-button size="small" secondary @click="fetchScripts"><template #icon><n-icon><refresh-icon/></n-icon></template>刷新</n-button>
+        <n-button size="small" secondary @click="refreshLog"><template #icon><n-icon><refresh-icon/></n-icon></template>刷新</n-button>
       </template>
       
       <div v-if="logSteps.length > 0" class="log-container">
@@ -303,7 +303,8 @@ const message = useMessage()
 
 // 状态
 const activeMenu = ref('dashboard')
-const scripts = ref([])
+const scripts = ref([])          // 列表只存轻量字段（无 code / last_log）
+const scriptDetailCache = ref({}) // 按需缓存完整数据（打开编辑/日志时填入）
 const showModal = ref(false)
 const isEdit = ref(false)
 const saving = ref(false)
@@ -312,18 +313,14 @@ const showLogDrawer = ref(false)
 const currentLogScript = ref(null)
 const logSteps = ref([])
 
-// 表单数据，增加 task_secrets
 const form = ref({ name: '', cron: '0 8 * * *', delay: 300, code: '', requirements: '', is_active: true, runtime: 'python' })
-// 本地编辑 Secrets 的临时数组
 const localSecrets = ref([])
 
 const menuOptions = [
   { label: '任务列表', key: 'dashboard', icon: () => h(NIcon, null, { default: () => h(ListIcon) }) }
 ]
 
-const handleMenuClick = (key) => {
-  // 仅保留任务列表，无额外逻辑
-}
+const handleMenuClick = (_key) => {}
 
 const getStatusType = (status) => {
   if (status === 'Success') return 'success'
@@ -334,81 +331,140 @@ const getStatusType = (status) => {
 
 const getToken = () => localStorage.getItem('token')
 
+// ⚠️修复: 统一 401 处理 —— 所有 API 调用均通过此 axios 实例，拦截器统一跳转 /login
+const api = axios.create()
+api.interceptors.request.use(config => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+api.interceptors.response.use(
+  res => res,
+  err => {
+    if (err.response && err.response.status === 401) {
+      localStorage.removeItem('token')
+      router.push('/login')
+    }
+    return Promise.reject(err)
+  }
+)
+
+// ⚠️修复: 列表接口不再返回 code/last_log 大字段（后端已处理），前端轻量存储
 const fetchScripts = async () => {
   try {
-    const res = await axios.get('/api/scripts', { headers: { Authorization: `Bearer ${getToken()}` } })
-    scripts.value = res.data
+    const res = await api.get('/api/scripts')
+    // 只保留列表卡片展示需要的字段，不存 code / last_log
+    scripts.value = res.data.map(s => ({
+      id: s.id,
+      name: s.name,
+      cron: s.cron || s.cron_exp,
+      cron_exp: s.cron_exp,
+      delay: s.delay !== undefined ? s.delay : s.random_delay,
+      random_delay: s.random_delay,
+      is_active: s.is_active,
+      last_run: s.last_run,
+      last_status: s.last_status,
+      task_secrets: s.task_secrets,
+    }))
+    // 若日志抽屉已打开，同步刷新日志（使用完整详情接口）
     if (showLogDrawer.value && currentLogScript.value) {
-      const updated = scripts.value.find(s => s.id === currentLogScript.value.id)
-      if (updated) openLogDrawer(updated)
+      await refreshLog()
     }
   } catch (e) {
-    if (e.response && e.response.status === 401) router.push('/login')
+    // 401 由拦截器处理，此处只处理其他错误
+    if (!e.response || e.response.status !== 401) {
+      message.error('获取任务列表失败')
+    }
   }
 }
 
-const openLogDrawer = (script) => {
-  currentLogScript.value = script
+// ⚠️修复: 打开日志时按需请求完整数据（含 last_log），不依赖列表缓存
+const openLogDrawer = async (scriptId) => {
+  const light = scripts.value.find(s => s.id === scriptId)
+  if (!light) return
+  currentLogScript.value = light
   showLogDrawer.value = true
+  logSteps.value = []
+  await refreshLog()
+}
+
+const refreshLog = async () => {
+  if (!currentLogScript.value) return
   try {
-    const logs = JSON.parse(script.last_log || '[]')
-    logs.forEach((step, index) => {
-      step.expanded = (step.status !== 0 && step.status !== 2) || (index === logs.length - 1)
-    })
-    logSteps.value = logs
+    const res = await api.get(`/api/scripts/${currentLogScript.value.id}`)
+    const detail = res.data
+    scriptDetailCache.value[detail.id] = detail
+    // 更新卡片状态
+    const idx = scripts.value.findIndex(s => s.id === detail.id)
+    if (idx !== -1) {
+      scripts.value[idx].last_status = detail.last_status
+      scripts.value[idx].last_run = detail.last_run
+    }
+    try {
+      const logs = JSON.parse(detail.last_log || '[]')
+      logs.forEach((step, index) => {
+        step.expanded = (step.status !== 0 && step.status !== 2) || (index === logs.length - 1)
+      })
+      logSteps.value = logs
+    } catch (e) {
+      logSteps.value = []
+    }
   } catch (e) {
-    logSteps.value = []
+    if (!e.response || e.response.status !== 401) {
+      message.error('获取日志失败')
+    }
   }
 }
 
 const runScript = async (id) => {
   try {
-    await axios.post(`/api/scripts/${id}/run`, {}, { headers: { Authorization: `Bearer ${getToken()}` } })
+    await api.post(`/api/scripts/${id}/run`, {})
     message.success('任务开始运行...')
     setTimeout(fetchScripts, 1000)
   } catch(e) {
-    message.error('运行失败')
+    if (!e.response || e.response.status !== 401) message.error('运行失败')
   }
 }
 
-// 切换暂停/恢复
 const toggleScriptStatus = async (script) => {
   try {
-    // 构造完整的更新对象，只修改 is_active
+    // 切换时需要完整 payload；code/requirements 从缓存取，缓存没有时先拉取
+    let detail = scriptDetailCache.value[script.id]
+    if (!detail) {
+      const res = await api.get(`/api/scripts/${script.id}`)
+      detail = res.data
+      scriptDetailCache.value[script.id] = detail
+    }
     const payload = {
       name: script.name,
       cron: script.cron || script.cron_exp,
-      delay: script.delay || script.random_delay,
-      code: script.code,
-      requirements: script.requirements,
+      delay: script.delay !== undefined ? script.delay : script.random_delay,
+      code: detail.code,
+      requirements: detail.requirements,
       task_secrets: script.task_secrets,
-      is_active: !script.is_active // 切换状态
+      is_active: !script.is_active
     }
-    await axios.put(`/api/scripts/${script.id}`, payload, { headers: { Authorization: `Bearer ${getToken()}` } })
+    await api.put(`/api/scripts/${script.id}`, payload)
     message.success(script.is_active ? '任务已暂停' : '任务已恢复')
     fetchScripts()
   } catch (e) {
-    message.error('操作失败')
+    if (!e.response || e.response.status !== 401) message.error('操作失败')
   }
 }
 
 const deleteScript = async (id) => {
   try {
-    await axios.delete(`/api/scripts/${id}`, { headers: { Authorization: `Bearer ${getToken()}` } })
+    await api.delete(`/api/scripts/${id}`)
+    delete scriptDetailCache.value[id]
     message.success('已删除')
     fetchScripts()
   } catch(e) {
-    message.error('删除失败')
+    if (!e.response || e.response.status !== 401) message.error('删除失败')
   }
 }
 
-// 本地 Secrets 操作
-const addLocalSecret = () => {
-  localSecrets.value.push({ key: '', value: '' })
-}
-const removeLocalSecret = (index) => {
-  localSecrets.value.splice(index, 1)
-}
+const addLocalSecret = () => { localSecrets.value.push({ key: '', value: '' }) }
+const removeLocalSecret = (index) => { localSecrets.value.splice(index, 1) }
 
 const openCreateModal = () => {
   isEdit.value = false
@@ -421,15 +477,28 @@ const openCreateModal = () => {
     is_active: true,
     runtime: 'python'
   }
-  localSecrets.value = [] // 清空本地 Secrets
+  localSecrets.value = []
   showModal.value = true
 }
 
-const editScript = (script) => {
+// ⚠️修复: 编辑时按需拉取完整数据（含 code），不再依赖列表缓存
+const editScript = async (scriptId) => {
+  let detail = scriptDetailCache.value[scriptId]
+  if (!detail) {
+    try {
+      const res = await api.get(`/api/scripts/${scriptId}`)
+      detail = res.data
+      scriptDetailCache.value[scriptId] = detail
+    } catch (e) {
+      if (!e.response || e.response.status !== 401) message.error('加载脚本数据失败')
+      return
+    }
+  }
+
   isEdit.value = true
-  currentId.value = script.id
+  currentId.value = detail.id
   
-  let codeStr = script.code || ''
+  let codeStr = detail.code || ''
   let runtime = 'python'
   if (codeStr.trim().startsWith('// runtime: node')) {
     runtime = 'node'
@@ -437,24 +506,23 @@ const editScript = (script) => {
   }
 
   form.value = { 
-    name: script.name, 
-    cron: script.cron || script.cron_exp, 
-    delay: script.delay !== undefined ? script.delay : script.random_delay, 
+    name: detail.name, 
+    cron: detail.cron || detail.cron_exp, 
+    delay: detail.delay !== undefined ? detail.delay : detail.random_delay, 
     code: codeStr,
-    requirements: script.requirements || '',
-    is_active: script.is_active,
-    runtime: runtime
+    requirements: detail.requirements || '',
+    is_active: detail.is_active,
+    runtime
   }
   
-  // 解析 task_secrets JSON 字符串到本地数组
   localSecrets.value = []
   try {
-    const secretsObj = JSON.parse(script.task_secrets || '{}')
+    const secretsObj = JSON.parse(detail.task_secrets || '{}')
     for (const [k, v] of Object.entries(secretsObj)) {
       localSecrets.value.push({ key: k, value: v })
     }
   } catch (e) {
-    console.error("解析 Secrets 失败", e)
+    console.error('解析 Secrets 失败', e)
   }
   
   showModal.value = true
@@ -464,21 +532,14 @@ const saveData = async () => {
   if (!form.value.name) return message.warning('请输入名称')
   saving.value = true
   try {
-    // 将本地 Secrets 数组转换为 JSON 字符串
     const secretsObj = {}
-    localSecrets.value.forEach(item => {
-      if(item.key) secretsObj[item.key] = item.value
-    })
+    localSecrets.value.forEach(item => { if(item.key) secretsObj[item.key] = item.value })
 
     let finalCode = form.value.code
     if (form.value.runtime === 'node') {
-      if (!finalCode.trim().startsWith('// runtime: node')) {
-        finalCode = '// runtime: node\n' + finalCode
-      }
+      if (!finalCode.trim().startsWith('// runtime: node')) finalCode = '// runtime: node\n' + finalCode
     } else {
-      if (finalCode.trim().startsWith('// runtime: node')) {
-        finalCode = finalCode.replace(/^\s*\/\/\s*runtime:\s*node\r?\n?/, '')
-      }
+      if (finalCode.trim().startsWith('// runtime: node')) finalCode = finalCode.replace(/^\s*\/\/\s*runtime:\s*node\r?\n?/, '')
     }
 
     const payload = {
@@ -488,21 +549,24 @@ const saveData = async () => {
       code: finalCode,
       requirements: form.value.requirements,
       is_active: form.value.is_active,
-      task_secrets: JSON.stringify(secretsObj) // 序列化
+      task_secrets: JSON.stringify(secretsObj)
     }
-    const headers = { Authorization: `Bearer ${getToken()}` }
     
     if (isEdit.value) {
-      await axios.put(`/api/scripts/${currentId.value}`, payload, { headers })
+      await api.put(`/api/scripts/${currentId.value}`, payload)
+      // 更新后清除缓存，下次打开编辑器重新拉取最新数据
+      delete scriptDetailCache.value[currentId.value]
     } else {
-      await axios.post('/api/scripts', payload, { headers })
+      await api.post('/api/scripts', payload)
     }
     
     message.success('保存成功')
     showModal.value = false
     fetchScripts()
   } catch (e) {
-    message.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    if (!e.response || e.response.status !== 401) {
+      message.error('保存失败: ' + (e.response?.data?.detail || e.message))
+    }
   } finally {
     saving.value = false
   }
@@ -518,9 +582,7 @@ onMounted(fetchScripts)
 .content-bg { background-color: #101014; }
 .script-card { border-radius: 12px; transition: transform 0.2s; background: #18181c; border: 1px solid #2d2d30; }
 .script-card:hover { transform: translateY(-4px); border-color: #63e2b7; }
-/* 暂停状态的卡片样式 */
 .paused-card { opacity: 0.7; border-style: dashed; }
-
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .script-name { font-weight: 600; font-size: 16px; }
 .info-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; color: #aaa; }
@@ -528,31 +590,8 @@ onMounted(fetchScripts)
 :deep(.n-tabs) { height: 100%; display: flex; flex-direction: column; }
 :deep(.n-tabs .n-tabs-pane-wrapper) { flex: 1; overflow: hidden; }
 :deep(.n-tab-pane) { height: 100%; display: flex; flex-direction: column; }
-
-.simple-editor {
-  flex: 1; 
-  width: 100%; 
-  background: #1e1e1e; 
-  color: #d4d4d4; 
-  border: none; 
-  padding: 15px; 
-  font-family: 'Fira Code', 'Consolas', monospace; 
-  font-size: 14px;
-  line-height: 1.5;
-  resize: none; 
-  outline: none;
-}
-
-.secret-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 10px;
-  background: rgba(255,255,255,0.03);
-  border-radius: 6px;
-}
-
-/* 日志样式 */
+.simple-editor { flex: 1; width: 100%; background: #1e1e1e; color: #d4d4d4; border: none; padding: 15px; font-family: 'Fira Code', 'Consolas', monospace; font-size: 14px; line-height: 1.5; resize: none; outline: none; }
+.secret-row { display: flex; align-items: center; gap: 10px; padding: 10px; background: rgba(255,255,255,0.03); border-radius: 6px; }
 .log-container { display: flex; flex-direction: column; gap: 8px; padding: 16px; }
 .log-step { background-color: #161b22; border: 1px solid #30363d; border-radius: 6px; overflow: hidden; }
 .log-step-header { display: flex; justify-content: space-between; align-items: center; padding: 10px 16px; cursor: pointer; user-select: none; transition: background 0.2s; }

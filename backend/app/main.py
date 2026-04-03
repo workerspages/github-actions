@@ -83,7 +83,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 scheduler = AsyncIOScheduler(timezone=ZoneInfo("Asia/Shanghai"), job_defaults={'misfire_grace_time': 1800})
 
-# --- 修复BUG-cancel: 维护运行中任务的映射表 {script_id: asyncio.Task} ---
+# 修复BUG-cancel: 维护运行中任务的映射表 {script_id: asyncio.Task}
 running_tasks: dict[int, asyncio.Task] = {}
 
 # ==========================================
@@ -137,6 +137,19 @@ class ScriptResponse(ScriptBase):
     last_run: Optional[str] = None
     last_status: Optional[str] = None
     last_log: Optional[str] = None
+    class Config:
+        from_attributes = True
+
+# ⚠️优化: 列表接口用轻量响应模型，不含 code / last_log
+class ScriptListItem(BaseModel):
+    id: int
+    name: str
+    cron: str
+    delay: int
+    is_active: bool
+    last_run: Optional[str] = None
+    last_status: Optional[str] = None
+    task_secrets: str = "{}"
     class Config:
         from_attributes = True
 
@@ -355,7 +368,6 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
         logs.append(f"Error: {str(e)}")
         raise Exception(f"Env setup failed: {e}")
 
-    # 不可达，但保留作为安全兜底
     return "python", "Unknown runtime", 0
 
 async def run_script_task(script_id: int, override_delay: int = -1):
@@ -409,7 +421,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     runtime = detect_runtime(script_data['code'])
 
-    # BUG-FIX: needs_browser 在 Step4 和 Step5 都要用，提前在顶层计算，避免 Step5 引用时 NameError
     needs_browser = bool(
         script_data['requirements'] and (
             'selenium' in script_data['requirements'].lower() or
@@ -458,7 +469,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": f"Installing {runtime} packages..."})
     update_db()
 
-    # BUG-FIX: exec_cmd 初始化为 None，prepare_env 失败时不会残留空字符串导致后续 cmd_args 出错
     exec_cmd = None
     env_dir = os.path.join(VENVS_DIR, str(script_id))
 
@@ -643,7 +653,6 @@ _patch_selenium_chrome()
             else:
                 cmd_args = ["node", file_path]
         else:
-            # BUG-FIX: exec_cmd 为 None 时（prepare_env 理论上不应到这里，但加保护）
             if exec_cmd is None:
                 exec_cmd = sys.executable
             if use_xvfb:
@@ -710,7 +719,7 @@ _patch_selenium_chrome()
             steps_log.pop()
             steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": "Task was cancelled by user."})
             update_db("Cancelled")
-            raise  # 重新抛出 CancelledError，让 asyncio 正确感知任务已取消
+            raise
     except asyncio.CancelledError:
         raise
     except Exception as e:
@@ -742,9 +751,7 @@ app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets
 
 @app.on_event("startup")
 async def startup_event():
-    # BUG-FIX: startup_event 改为 async，避免在其中调用 scheduler.start() 时事件循环未就绪
     scheduler.start()
-    # DB migration 用 to_thread 包装阻塞的 SQLAlchemy 操作
     def _migrate():
         db = SessionLocal()
         try:
@@ -797,15 +804,29 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depen
     if not user or not pwd_context.verify(form.password, user.hashed_password): raise HTTPException(status_code=400)
     return {"access_token": create_access_token({"sub": user.username}), "token_type": "bearer"}
 
-@app.get("/api/scripts", response_model=List[ScriptResponse])
+# ⚠️优化: 列表接口使用轻量模型，不返回 code / last_log
+@app.get("/api/scripts", response_model=List[ScriptListItem])
 def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
     scripts = db.query(Script).all()
-    return [ScriptResponse(
+    return [ScriptListItem(
+        id=s.id, name=s.name,
+        cron=s.cron_exp, delay=s.random_delay,
+        is_active=s.is_active,
+        last_run=s.last_run, last_status=s.last_status,
+        task_secrets=s.task_secrets
+    ) for s in scripts]
+
+# ⚠️新增: 单脚本详情接口，返回完整数据（含 code / last_log），供编辑和日志使用
+@app.get("/api/scripts/{script_id}", response_model=ScriptResponse)
+def get_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
+    s = db.query(Script).filter(Script.id == script_id).first()
+    if not s: raise HTTPException(status_code=404)
+    return ScriptResponse(
         id=s.id, name=s.name, code=s.code, requirements=s.requirements,
         cron=s.cron_exp, delay=s.random_delay, is_active=s.is_active,
         last_run=s.last_run, last_status=s.last_status, last_log=s.last_log,
         task_secrets=s.task_secrets
-    ) for s in scripts]
+    )
 
 @app.post("/api/scripts", response_model=ScriptResponse)
 def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
@@ -888,7 +909,6 @@ async def cancel_script(script_id: int, db: Session = Depends(get_db), u=Depends
         logger.info(f"Script {script_id}: cancel signal sent to running task.")
         return {"status": "cancelling"}
     else:
-        # 任务不在运行中，仅更新 DB 状态（兼容旧逻辑）
         if script.last_status == "Running":
             script.last_status = "Cancelled"
             db.commit()

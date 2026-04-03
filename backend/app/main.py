@@ -12,7 +12,6 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
-from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, status, Body
 from fastapi.staticfiles import StaticFiles
@@ -40,7 +39,7 @@ SCRIPTS_DIR = "/app/scripts"
 VENVS_DIR = "/app/data/venvs"
 STATIC_DIR = "/app/static"
 DATA_DIR = "/app/data"
-SCRIPT_TIMEOUT_SECONDS = int(os.getenv("SCRIPT_TIMEOUT", "7200"))  # 默认 2 小时超时
+SCRIPT_TIMEOUT_SECONDS = int(os.getenv("SCRIPT_TIMEOUT", "7200"))
 
 # --- 修复#4: JWT Secret 持久化 ---
 _SECRET_KEY_FILE = os.path.join(DATA_DIR, ".jwt_secret")
@@ -77,7 +76,6 @@ else:
     engine_kwargs["pool_timeout"] = 30
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
-
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -173,12 +171,11 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     if user is None: raise HTTPException(status_code=401)
     return user
 
-# --- 修复#5: 日志截断辅助函数 ---
+# --- 修复#5: 日志截断 ---
 LOG_MAX_LINES = 1000
 LOG_MAX_CHARS = 200_000
 
 def _truncate_log(text: str) -> str:
-    """截断超长日志，只保留最后 LOG_MAX_LINES 行 / LOG_MAX_CHARS 字符"""
     if len(text) > LOG_MAX_CHARS:
         text = "...[日志过长，已截断前段输出]...\n" + text[-LOG_MAX_CHARS:]
     lines = text.splitlines()
@@ -191,7 +188,7 @@ def _compute_req_hash(requirements: str) -> str:
     return hashlib.md5((requirements or "").strip().encode()).hexdigest()
 
 def _persist_req_hash(script_id: int, new_hash: str):
-    """修复#7: 安装成功后将新哈希写回数据库，下次运行前可以正确比对跳过安装"""
+    """修复#7: 安装成功后将新哈希写回数据库"""
     db = SessionLocal()
     try:
         script = db.query(Script).filter(Script.id == script_id).first()
@@ -216,9 +213,10 @@ def detect_runtime(code: str) -> str:
 
 async def prepare_env(script_id: int, requirements: str, runtime: str, current_db_hash: str = "") -> tuple[str, str, float]:
     """
-    修复#2: 所有 subprocess.run 阻塞调用替换为 asyncio.create_subprocess_exec 或 asyncio.to_thread
-    修复#7: 通过 requirements 哈希値避免每次都重复安装依赖
-    修复#8: Playwright 优先模式下，输出明确提示建议使用 Playwright 原生调用内置 Chrome
+    修复#2: 所有阻塞调用替换为 asyncio.to_thread / create_subprocess_exec
+    修复#7: requirements 哈希比对跳过安装，安装成功后写回 DB
+    修复#8: Playwright 优先提示
+    BUG-FIX: playwright 无其他依赖时也正确返回，不再遗漏哈希写回
     """
     start_time = time.time()
     env_dir = os.path.join(VENVS_DIR, str(script_id))
@@ -230,13 +228,23 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
     new_hash = _compute_req_hash(requirements)
     hash_file = os.path.join(env_dir, ".req_hash")
 
+    def _read_saved_hash() -> str:
+        if os.path.exists(hash_file):
+            with open(hash_file, "r") as f:
+                return f.read().strip()
+        return ""
+
+    async def _save_hash():
+        with open(hash_file, "w") as f:
+            f.write(new_hash)
+        await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
+
     try:
         if runtime == "python":
-            needs_playwright = requirements and "playwright" in requirements.lower()
-            needs_selenium = requirements and "selenium" in requirements.lower()
+            needs_playwright = bool(requirements and "playwright" in requirements.lower())
+            needs_selenium = bool(requirements and "selenium" in requirements.lower())
 
             if needs_playwright:
-                # 修复#8: 明确输出 Playwright 优先建议
                 logs.append("[推荐] 检测到 playwright 依赖，使用系统 Python + Docker 预装 Chromium。")
                 logs.append("[建议] 优先使用 playwright 原生 API（async_playwright / sync_playwright）而非 Selenium WebDriver，")
                 logs.append("        可获得更高的稳定性与性能，并直接复用镜像预装的浏览器无需额外下载。")
@@ -245,19 +253,13 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                 if needs_selenium:
                     logs.append("[注意] 检测到 selenium + playwright 并存。建议移除 selenium 改用 playwright 原生 API，减少冲突风险。")
 
-                other_deps = []
-                for line in requirements.strip().split('\n'):
-                    dep = line.strip().lower()
-                    if dep and 'playwright' not in dep:
-                        other_deps.append(line.strip())
+                other_deps = [
+                    line.strip() for line in requirements.strip().split('\n')
+                    if line.strip() and 'playwright' not in line.strip().lower()
+                ]
 
                 if other_deps:
-                    # 修复#7: playwright 模式也对其他依赖做哈希比对
-                    saved_hash = ""
-                    if os.path.exists(hash_file):
-                        with open(hash_file, "r") as f:
-                            saved_hash = f.read().strip()
-
+                    saved_hash = _read_saved_hash()
                     if saved_hash == new_hash:
                         logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
                     else:
@@ -270,13 +272,14 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                         if proc.returncode != 0:
                             logs.append("Warning: Some deps may have failed, but continuing with system Python")
                         else:
-                            # 修复#7: 安装成功 → 写回哈希到文件和数据库
-                            with open(hash_file, "w") as f: f.write(new_hash)
-                            await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
+                            await _save_hash()
+                else:
+                    # BUG-FIX: 纯 playwright 无其他依赖时，也要持久化哈希避免下次重复走此分支日志
+                    if _read_saved_hash() != new_hash:
+                        await _save_hash()
 
                 return "/usr/bin/python3", "\n".join(logs), time.time() - start_time
 
-            # 非 playwright 路径: 使用 venv 隔离
             if needs_selenium:
                 logs.append("[建议] 如果将来添加浏览器自动化功能，建议评估改用 playwright 替代 selenium，")
                 logs.append("        可直接复用镜像内置 Chrome，避免 webdriver-manager 在线下载驱动程序带来的不稳定性。")
@@ -289,11 +292,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                 )
 
             if requirements and requirements.strip():
-                saved_hash = ""
-                if os.path.exists(hash_file):
-                    with open(hash_file, "r") as f:
-                        saved_hash = f.read().strip()
-
+                saved_hash = _read_saved_hash()
                 if saved_hash == new_hash:
                     logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
                 else:
@@ -306,9 +305,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                     if stdout: logs.append(stdout.decode())
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0: raise Exception("Pip install failed")
-                    # 修复#7: 安装成功 → 写回哈希到文件和数据库
-                    with open(hash_file, "w") as f: f.write(new_hash)
-                    await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
+                    await _save_hash()
 
             return python_exec, "\n".join(logs), time.time() - start_time
 
@@ -322,11 +319,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
 
             if requirements and requirements.strip():
                 req_str = requirements.strip()
-
-                saved_hash = ""
-                if os.path.exists(hash_file):
-                    with open(hash_file, "r") as f:
-                        saved_hash = f.read().strip()
+                saved_hash = _read_saved_hash()
 
                 if saved_hash == new_hash:
                     logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
@@ -338,8 +331,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                         f.write(req_str)
                     cmd = ["npm", "install"]
                 else:
-                    deps = req_str.replace("\n", " ").split()
-                    deps = [d.strip() for d in deps if d.strip()]
+                    deps = [d.strip() for d in req_str.replace("\n", " ").split() if d.strip()]
                     if deps:
                         logs.append(f"Installing Node deps: {', '.join(deps)}")
                         cmd = ["npm", "install"] + deps
@@ -352,9 +344,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
                     if stdout: logs.append(stdout.decode())
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0: raise Exception("Npm install failed")
-                    # 修复#7: 安装成功 → 写回哈希到文件和数据库
-                    with open(hash_file, "w") as f: f.write(new_hash)
-                    await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
+                    await _save_hash()
 
             return "node", "\n".join(logs), time.time() - start_time
 
@@ -362,6 +352,7 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_d
         logs.append(f"Error: {str(e)}")
         raise Exception(f"Env setup failed: {e}")
 
+    # 不可达，但保留作为安全兜底
     return "python", "Unknown runtime", 0
 
 async def run_script_task(script_id: int, override_delay: int = -1):
@@ -375,7 +366,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
                 "id": script.id,
                 "name": script.name,
                 "code": script.code,
-                "requirements": script.requirements,
+                "requirements": script.requirements or "",
                 "random_delay": script.random_delay,
                 "task_secrets": script.task_secrets,
                 "req_hash": script.req_hash or "",
@@ -414,6 +405,14 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     update_db("Running")
 
     runtime = detect_runtime(script_data['code'])
+
+    # BUG-FIX: needs_browser 在 Step4 和 Step5 都要用，提前在顶层计算，避免 Step5 引用时 NameError
+    needs_browser = bool(
+        script_data['requirements'] and (
+            'selenium' in script_data['requirements'].lower() or
+            'playwright' in script_data['requirements'].lower()
+        )
+    )
 
     # Step 1: Setup
     t0 = time.time()
@@ -456,7 +455,8 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": f"Installing {runtime} packages..."})
     update_db()
 
-    exec_cmd = ""
+    # BUG-FIX: exec_cmd 初始化为 None，prepare_env 失败时不会残留空字符串导致后续 cmd_args 出错
+    exec_cmd = None
     env_dir = os.path.join(VENVS_DIR, str(script_id))
 
     try:
@@ -470,8 +470,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         update_db("Failed")
         return
 
-    # Step 4: Check browser (for Selenium/Playwright scripts)
-    needs_browser = script_data['requirements'] and ('selenium' in script_data['requirements'].lower() or 'playwright' in script_data['requirements'].lower())
+    # Step 4: Check browser
     if needs_browser:
         t0 = time.time()
         steps_log.append({"name": "Check browser", "status": 2, "duration": "...", "output": "Checking browser availability..."})
@@ -503,8 +502,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         browser_log.append("✓ Xvfb virtual display: available" if xvfb_available else "⚠ Xvfb not found, using headless mode")
         browser_log.append("Environment: GitHub Actions compatible")
 
-        # 修复#8: 在 Check browser 输出中附加 Playwright 优先输出评估建议
-        needs_playwright = script_data['requirements'] and 'playwright' in script_data['requirements'].lower()
+        needs_playwright = 'playwright' in script_data['requirements'].lower()
         needs_selenium_only = (not needs_playwright) and 'selenium' in script_data['requirements'].lower()
         if needs_playwright:
             browser_log.append("")
@@ -531,7 +529,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     script_code = script_data['code']
     if runtime == "python":
-        # 修复#8: 自动注入头部说明注释，影印平台指引信息
         proxy_import = '''# === GitHub API Proxy (Auto-injected) ===
 import sys, os
 _proxy_path = "/app/app"
@@ -634,12 +631,14 @@ _patch_selenium_chrome()
             else:
                 cmd_args = ["node", file_path]
         else:
+            # BUG-FIX: exec_cmd 为 None 时（prepare_env 理论上不应到这里，但加保护）
+            if exec_cmd is None:
+                exec_cmd = sys.executable
             if use_xvfb:
                 cmd_args = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", exec_cmd, file_path]
             else:
                 cmd_args = [exec_cmd, file_path]
 
-        # 修复#1: 使用 start_new_session=True 让子进程独立成进程组，便于超时时整组杀掉
         proc = await asyncio.create_subprocess_exec(
             *cmd_args,
             env=env_vars,
@@ -657,7 +656,6 @@ _patch_selenium_chrome()
             steps_log.append({"name": "Run script", "status": 0 if proc.returncode == 0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": output})
             update_db("Success" if proc.returncode == 0 else "Failed")
         except asyncio.TimeoutError:
-            # 修复#1: 超时时通过 os.killpg 杀掉整个进程组（含浏览器子进程）
             try:
                 pgid = os.getpgid(proc.pid)
                 os.killpg(pgid, signal.SIGTERM)
@@ -700,45 +698,55 @@ app = FastAPI(title="GitHubActions")
 app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets")
 
 @app.on_event("startup")
-def startup_event():
+async def startup_event():
+    # BUG-FIX: startup_event 改为 async，避免在其中调用 scheduler.start() 时事件循环未就绪
     scheduler.start()
-    db = SessionLocal()
+    # DB migration 用 to_thread 包装阻塞的 SQLAlchemy 操作
+    def _migrate():
+        db = SessionLocal()
+        try:
+            for col in ["requirements", "last_log", "task_secrets", "is_active", "req_hash"]:
+                try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
+                except:
+                    try:
+                        db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''"))
+                        db.commit()
+                    except Exception as e: logger.error(f"Migration error for {col}: {e}")
 
-    for col in ["requirements", "last_log", "task_secrets", "is_active", "req_hash"]:
-        try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
-        except:
+            # 修复#3: 启动时将所有 Running 状态置为 Failed (Killed)
             try:
-                db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''"))
+                stale_count = db.query(Script).filter(Script.last_status == "Running").update(
+                    {"last_status": "Failed (Killed)"},
+                    synchronize_session=False
+                )
+                if stale_count:
+                    logger.warning(f"Startup: reset {stale_count} stale 'Running' task(s) to 'Failed (Killed)'")
                 db.commit()
-            except Exception as e: logger.error(f"Migration error for {col}: {e}")
+            except Exception as e:
+                logger.error(f"Startup stale task cleanup error: {e}")
+                db.rollback()
 
-    # 修复#3: 启动时将所有 Running 状态的任务置为 Failed (Killed)
-    try:
-        stale_count = db.query(Script).filter(Script.last_status == "Running").update(
-            {"last_status": "Failed (Killed)"},
-            synchronize_session=False
-        )
-        if stale_count:
-            logger.warning(f"Startup: reset {stale_count} stale 'Running' task(s) to 'Failed (Killed)'")
-        db.commit()
-    except Exception as e:
-        logger.error(f"Startup stale task cleanup error: {e}")
-        db.rollback()
+            u = os.getenv("ADMIN_USER", "admin")
+            p = os.getenv("ADMIN_PASSWORD", "admin")
+            if not db.query(User).filter(User.username == u).first():
+                db.add(User(username=u, hashed_password=pwd_context.hash(p)))
+                db.commit()
 
-    u = os.getenv("ADMIN_USER", "admin")
-    p = os.getenv("ADMIN_PASSWORD", "admin")
-    if not db.query(User).filter(User.username == u).first():
-        db.add(User(username=u, hashed_password=pwd_context.hash(p))); db.commit()
+            if not db.query(Secret).filter(Secret.key == "GITHUB_ACTIONS").first():
+                db.add(Secret(key="GITHUB_ACTIONS", value="true"))
+                db.commit()
 
-    if not db.query(Secret).filter(Secret.key == "GITHUB_ACTIONS").first():
-        db.add(Secret(key="GITHUB_ACTIONS", value="true")); db.commit()
+            scripts = db.query(Script).filter(Script.is_active == True).all()
+            return scripts
+        finally:
+            db.close()
 
-    for s in db.query(Script).filter(Script.is_active == True).all(): add_job_to_scheduler(s)
+    scripts = await asyncio.to_thread(_migrate)
+    for s in scripts:
+        add_job_to_scheduler(s)
 
     logger.info(f"Scheduler initialized with timezone: {scheduler.timezone}")
     logger.info(f"Scheduler running: {scheduler.running}")
-
-    db.close()
 
 @app.post("/token")
 async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
@@ -803,7 +811,8 @@ def delete_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_c
     if not item: raise HTTPException(status_code=404)
     try: scheduler.remove_job(str(script_id))
     except: pass
-    if os.path.exists(os.path.join(VENVS_DIR, str(script_id))): shutil.rmtree(os.path.join(VENVS_DIR, str(script_id)), ignore_errors=True)
+    venv_path = os.path.join(VENVS_DIR, str(script_id))
+    if os.path.exists(venv_path): shutil.rmtree(venv_path, ignore_errors=True)
     db.delete(item); db.commit()
     return {"status": "deleted"}
 

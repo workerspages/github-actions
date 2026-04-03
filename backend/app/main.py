@@ -83,6 +83,9 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 scheduler = AsyncIOScheduler(timezone=ZoneInfo("Asia/Shanghai"), job_defaults={'misfire_grace_time': 1800})
 
+# --- 修复BUG-cancel: 维护运行中任务的映射表 {script_id: asyncio.Task} ---
+running_tasks: dict[int, asyncio.Task] = {}
+
 # ==========================================
 # 2. 数据库模型
 # ==========================================
@@ -471,6 +474,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         return
 
     # Step 4: Check browser
+    # 修复BUG #2-残留: 将同步 subprocess.run 替换为 asyncio 版本
     if needs_browser:
         t0 = time.time()
         steps_log.append({"name": "Check browser", "status": 2, "duration": "...", "output": "Checking browser availability..."})
@@ -482,18 +486,26 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
         if os.path.exists(chrome_bin):
             try:
-                result = subprocess.run([chrome_bin, "--version"], capture_output=True, text=True)
-                browser_log.append(f"✓ Google Chrome: {result.stdout.strip()}")
-            except:
+                proc = await asyncio.create_subprocess_exec(
+                    chrome_bin, "--version",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                browser_log.append(f"✓ Google Chrome: {stdout.decode().strip()}")
+            except Exception:
                 browser_log.append(f"✓ Google Chrome found: {chrome_bin}")
         else:
             browser_log.append(f"✗ Google Chrome not found at {chrome_bin}")
 
         if os.path.exists(chromedriver):
             try:
-                result = subprocess.run([chromedriver, "--version"], capture_output=True, text=True)
-                browser_log.append(f"✓ ChromeDriver: {result.stdout.strip()}")
-            except:
+                proc = await asyncio.create_subprocess_exec(
+                    chromedriver, "--version",
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+                stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                browser_log.append(f"✓ ChromeDriver: {stdout.decode().strip()}")
+            except Exception:
                 browser_log.append(f"✓ ChromeDriver found: {chromedriver}")
         else:
             browser_log.append(f"✗ ChromeDriver not found at {chromedriver}")
@@ -646,6 +658,12 @@ _patch_selenium_chrome()
             stderr=subprocess.PIPE,
             start_new_session=True
         )
+
+        # 修复BUG-cancel: 注册进程到运行映射表，以便 cancel API 真正杀死进程
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            running_tasks[script_id] = current_task
+
         try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(),
@@ -673,10 +691,35 @@ _patch_selenium_chrome()
             steps_log.pop()
             steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": f"Script execution timed out after {SCRIPT_TIMEOUT_SECONDS}s"})
             update_db("Timeout")
+        except asyncio.CancelledError:
+            # 修复BUG-cancel: 任务被 cancel() 时，杀死子进程组
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                await asyncio.sleep(2)
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
+            steps_log.pop()
+            steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": "Task was cancelled by user."})
+            update_db("Cancelled")
+            raise  # 重新抛出 CancelledError，让 asyncio 正确感知任务已取消
+    except asyncio.CancelledError:
+        raise
     except Exception as e:
         steps_log.pop()
         steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": str(e)})
         update_db("Error")
+    finally:
+        # 修复BUG-cancel: 任务结束后从映射表中移除，无论是正常完成还是取消
+        running_tasks.pop(script_id, None)
 
     steps_log.append({"name": "Complete job", "status": 0, "duration": "0.1s", "output": "Done."})
 
@@ -790,7 +833,15 @@ def update_script(script_id: int, s: ScriptBase, db: Session = Depends(get_db), 
     item.name = s.name
     item.code = s.code
     if (item.requirements or "") != (s.requirements or ""):
+        # 修复BUG #7-严重: requirements 变化时，同时清除 DB hash 和磁盘 hash 文件，确保下次运行重新安装
         item.req_hash = ""
+        hash_file = os.path.join(VENVS_DIR, str(script_id), ".req_hash")
+        if os.path.exists(hash_file):
+            try:
+                os.remove(hash_file)
+                logger.info(f"Script {script_id}: requirements changed, removed stale hash file.")
+            except OSError as e:
+                logger.warning(f"Script {script_id}: failed to remove hash file: {e}")
     item.requirements = s.requirements
     item.cron_exp = s.cron
     item.random_delay = s.delay
@@ -821,14 +872,27 @@ async def run_now(script_id: int, u=Depends(get_current_user)):
     asyncio.create_task(run_script_task(script_id, 0)); return {"status": "triggered"}
 
 @app.post("/api/scripts/{script_id}/cancel")
-def cancel_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
+async def cancel_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
+    """
+    修复BUG-cancel: 真正取消正在运行的任务。
+    通过 running_tasks 映射找到对应 asyncio.Task，调用 task.cancel()，
+    task 内部的 CancelledError handler 会负责 kill 子进程并更新 DB 状态。
+    """
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404)
-    if script.last_status == "Running":
-        script.last_status = "Cancelled"
-        db.commit()
-    return {"status": "cancelled"}
+
+    task = running_tasks.get(script_id)
+    if task and not task.done():
+        task.cancel()
+        logger.info(f"Script {script_id}: cancel signal sent to running task.")
+        return {"status": "cancelling"}
+    else:
+        # 任务不在运行中，仅更新 DB 状态（兼容旧逻辑）
+        if script.last_status == "Running":
+            script.last_status = "Cancelled"
+            db.commit()
+        return {"status": "cancelled"}
 
 @app.get("/api/secrets", response_model=List[SecretResponse])
 def get_secrets(db: Session = Depends(get_db), u=Depends(get_current_user)):

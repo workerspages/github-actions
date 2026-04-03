@@ -1,5 +1,6 @@
 import os
 import sys
+import signal
 import random
 import asyncio
 import subprocess
@@ -7,9 +8,11 @@ import secrets
 import shutil
 import json
 import time
+import hashlib
 from datetime import datetime, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
+from pathlib import Path
 
 from fastapi import FastAPI, Depends, HTTPException, status, Body
 from fastapi.staticfiles import StaticFiles
@@ -30,14 +33,35 @@ from loguru import logger
 # ==========================================
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:////app/data/github-actions.db")
-SECRET_KEY = os.getenv("JWT_SECRET", secrets.token_hex(32))
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 
 SCRIPTS_DIR = "/app/scripts"
 VENVS_DIR = "/app/data/venvs"
 STATIC_DIR = "/app/static"
+DATA_DIR = "/app/data"
 SCRIPT_TIMEOUT_SECONDS = int(os.getenv("SCRIPT_TIMEOUT", "7200"))  # 默认 2 小时超时
+
+# --- 修复#4: JWT Secret 持久化 ---
+# 优先使用环境变量，否则从数据目录的隐藏文件中读取/生成，避免每次重启都变化
+_SECRET_KEY_FILE = os.path.join(DATA_DIR, ".jwt_secret")
+
+def _load_or_create_secret_key() -> str:
+    env_key = os.getenv("JWT_SECRET")
+    if env_key:
+        return env_key
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if os.path.exists(_SECRET_KEY_FILE):
+        with open(_SECRET_KEY_FILE, "r") as f:
+            key = f.read().strip()
+            if key:
+                return key
+    key = secrets.token_hex(32)
+    with open(_SECRET_KEY_FILE, "w") as f:
+        f.write(key)
+    return key
+
+SECRET_KEY = _load_or_create_secret_key()
 
 os.makedirs(SCRIPTS_DIR, exist_ok=True)
 os.makedirs(VENVS_DIR, exist_ok=True)
@@ -47,12 +71,11 @@ engine_kwargs = {}
 if DATABASE_URL.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
 else:
-    # 外挂数据库（MariaDB/MySQL）连接池配置
-    engine_kwargs["pool_recycle"] = 300  # 5分钟回收连接（避免云数据库超时）
-    engine_kwargs["pool_pre_ping"] = True  # 使用前检测连接是否有效
-    engine_kwargs["pool_size"] = 5  # 连接池大小
-    engine_kwargs["max_overflow"] = 10  # 允许的额外连接数
-    engine_kwargs["pool_timeout"] = 30  # 获取连接超时
+    engine_kwargs["pool_recycle"] = 300
+    engine_kwargs["pool_pre_ping"] = True
+    engine_kwargs["pool_size"] = 5
+    engine_kwargs["max_overflow"] = 10
+    engine_kwargs["pool_timeout"] = 30
 
 engine = create_engine(DATABASE_URL, **engine_kwargs)
 
@@ -81,11 +104,12 @@ class Script(Base):
     requirements = Column(Text, default="")
     cron_exp = Column(String(100))
     random_delay = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True) # 用于暂停/恢复
+    is_active = Column(Boolean, default=True)
     last_run = Column(String(50), nullable=True)
     last_status = Column(String(50), nullable=True)
     last_log = Column(Text, default="[]")
-    task_secrets = Column(Text, default="{}") # 新增：任务独享 Secrets (JSON格式)
+    task_secrets = Column(Text, default="{}")
+    req_hash = Column(String(64), default="")  # 修复#7: 依赖哈希，避免重复安装
 
 class Secret(Base):
     __tablename__ = "secrets"
@@ -105,8 +129,8 @@ class ScriptBase(BaseModel):
     requirements: Optional[str] = ""
     cron: str
     delay: int = 0
-    is_active: bool = True # 允许前端控制激活状态
-    task_secrets: str = "{}" # 传递 JSON 字符串
+    is_active: bool = True
+    task_secrets: str = "{}"
 
 class ScriptResponse(ScriptBase):
     id: int
@@ -150,6 +174,20 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     if user is None: raise HTTPException(status_code=401)
     return user
 
+# --- 修复#5: 日志截断辅助函数 ---
+LOG_MAX_LINES = 1000
+LOG_MAX_CHARS = 200_000
+
+def _truncate_log(text: str) -> str:
+    """截断超长日志，只保留最后 LOG_MAX_LINES 行 / LOG_MAX_CHARS 字符"""
+    if len(text) > LOG_MAX_CHARS:
+        text = "...[日志过长，已截断前段输出]...\n" + text[-LOG_MAX_CHARS:]
+    lines = text.splitlines()
+    if len(lines) > LOG_MAX_LINES:
+        lines = ["...[日志行数过多，已截断]..."] + lines[-LOG_MAX_LINES:]
+        text = "\n".join(lines)
+    return text
+
 # ==========================================
 # 5. 核心逻辑
 # ==========================================
@@ -160,33 +198,40 @@ def detect_runtime(code: str) -> str:
         return "node"
     return "python"
 
-async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[str, str, float]:
+def _req_hash(requirements: str) -> str:
+    return hashlib.md5((requirements or "").strip().encode()).hexdigest()
+
+async def prepare_env(script_id: int, requirements: str, runtime: str, current_hash: str = "") -> tuple[str, str, float]:
+    """
+    修复#2: 所有 subprocess.run 阻塞调用替换为 asyncio.create_subprocess_exec 或 asyncio.to_thread
+    修复#7: 通过 requirements 哈希值避免每次都重复安装依赖
+    """
     start_time = time.time()
     env_dir = os.path.join(VENVS_DIR, str(script_id))
     logs = []
-    
+
     if not os.path.exists(env_dir):
         os.makedirs(env_dir, exist_ok=True)
 
+    new_hash = _req_hash(requirements)
+    hash_file = os.path.join(env_dir, ".req_hash")
+
     try:
         if runtime == "python":
-            # 检测是否需要 playwright（使用系统级 Python，复用 Docker 预装的浏览器）
             needs_playwright = requirements and "playwright" in requirements.lower()
-            
+
             if needs_playwright:
                 logs.append("Detected playwright dependency, using system Python (pre-installed)")
                 logs.append("Skipping venv to reuse Docker's pre-installed browsers")
-                
-                # 过滤掉 playwright，安装其他依赖到系统级
+
                 other_deps = []
                 for line in requirements.strip().split('\n'):
                     dep = line.strip().lower()
                     if dep and 'playwright' not in dep:
                         other_deps.append(line.strip())
-                
+
                 if other_deps:
                     logs.append(f"Installing additional deps: {', '.join(other_deps)}")
-                    # 使用 pip3 安装到系统级（Docker 容器内可以直接安装）
                     cmd = ["/usr/bin/pip3", "install", "--break-system-packages"] + other_deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
                     proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     stdout, stderr = await proc.communicate()
@@ -194,37 +239,61 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0:
                         logs.append("Warning: Some deps may have failed, but continuing with system Python")
-                
+
                 return "/usr/bin/python3", "\n".join(logs), time.time() - start_time
-            
-            # 其他任务继续使用 venv 隔离
+
             python_exec = os.path.join(env_dir, "bin", "python")
             if not os.path.exists(python_exec):
                 logs.append("Creating Python venv...")
-                subprocess.run([sys.executable, "-m", "venv", env_dir], check=True)
-            
+                # 修复#2: 使用 asyncio.to_thread 包装阻塞的 venv 创建调用
+                await asyncio.to_thread(
+                    lambda: subprocess.run([sys.executable, "-m", "venv", env_dir], check=True)
+                )
+
             if requirements and requirements.strip():
-                logs.append(f"Installing Python deps: {requirements}")
-                req_file = os.path.join(env_dir, "requirements.txt")
-                with open(req_file, "w") as f: f.write(requirements)
-                cmd = [os.path.join(env_dir, "bin", "pip"), "install", "-r", req_file, "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = await proc.communicate()
-                if stdout: logs.append(stdout.decode())
-                if stderr: logs.append(stderr.decode())
-                if proc.returncode != 0: raise Exception("Pip install failed")
+                # 修复#7: 对比哈希，若依赖未变则跳过安装
+                saved_hash = ""
+                if os.path.exists(hash_file):
+                    with open(hash_file, "r") as f:
+                        saved_hash = f.read().strip()
+
+                if saved_hash == new_hash:
+                    logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
+                else:
+                    logs.append(f"Installing Python deps: {requirements}")
+                    req_file = os.path.join(env_dir, "requirements.txt")
+                    with open(req_file, "w") as f: f.write(requirements)
+                    cmd = [os.path.join(env_dir, "bin", "pip"), "install", "-r", req_file, "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+                    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    stdout, stderr = await proc.communicate()
+                    if stdout: logs.append(stdout.decode())
+                    if stderr: logs.append(stderr.decode())
+                    if proc.returncode != 0: raise Exception("Pip install failed")
+                    with open(hash_file, "w") as f: f.write(new_hash)
+
             return python_exec, "\n".join(logs), time.time() - start_time
 
         elif runtime == "node":
             logs.append(f"Preparing Node.js environment at {env_dir}...")
             pkg_file = os.path.join(env_dir, "package.json")
             if not os.path.exists(pkg_file):
-                subprocess.run(["npm", "init", "-y"], cwd=env_dir, check=True, stdout=subprocess.DEVNULL)
-            
+                # 修复#2: 使用 asyncio.to_thread 包装阻塞的 npm init
+                await asyncio.to_thread(
+                    lambda: subprocess.run(["npm", "init", "-y"], cwd=env_dir, check=True, stdout=subprocess.DEVNULL)
+                )
+
             if requirements and requirements.strip():
                 req_str = requirements.strip()
-                
-                # Check if it looks like a package.json JSON string
+
+                saved_hash = ""
+                if os.path.exists(hash_file):
+                    with open(hash_file, "r") as f:
+                        saved_hash = f.read().strip()
+
+                if saved_hash == new_hash:
+                    logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
+                    return "node", "\n".join(logs), time.time() - start_time
+
                 if req_str.startswith("{"):
                     logs.append("Installing Node deps from package.json")
                     with open(pkg_file, "w") as f:
@@ -238,13 +307,15 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
                         cmd = ["npm", "install"] + deps
                     else:
                         cmd = []
-                
+
                 if cmd:
                     proc = await asyncio.create_subprocess_exec(*cmd, cwd=env_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                     stdout, stderr = await proc.communicate()
                     if stdout: logs.append(stdout.decode())
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0: raise Exception("Npm install failed")
+                    with open(hash_file, "w") as f: f.write(new_hash)
+
             return "node", "\n".join(logs), time.time() - start_time
 
     except Exception as e:
@@ -254,14 +325,12 @@ async def prepare_env(script_id: int, requirements: str, runtime: str) -> tuple[
     return "python", "Unknown runtime", 0
 
 async def run_script_task(script_id: int, override_delay: int = -1):
-    # 使用短连接模式：每次操作后关闭连接，避免外挂数据库超时
     def get_script_data():
         db = SessionLocal()
         try:
             script = db.query(Script).filter(Script.id == script_id).first()
             if not script:
                 return None
-            # 返回需要的数据副本
             return {
                 "id": script.id,
                 "name": script.name,
@@ -269,23 +338,30 @@ async def run_script_task(script_id: int, override_delay: int = -1):
                 "requirements": script.requirements,
                 "random_delay": script.random_delay,
                 "task_secrets": script.task_secrets,
+                "req_hash": script.req_hash or "",
             }
         finally:
             db.close()
-    
+
     script_data = get_script_data()
     if not script_data:
         return
 
     steps_log = []
-    
+
     def update_db(status="Running"):
-        """使用新连接更新数据库，避免长连接超时"""
         db = SessionLocal()
         try:
             script = db.query(Script).filter(Script.id == script_id).first()
             if script:
-                script.last_log = json.dumps(steps_log)
+                # 修复#5: 序列化日志时对每个 step 的 output 进行截断
+                truncated_steps = []
+                for step in steps_log:
+                    s = dict(step)
+                    if isinstance(s.get("output"), str):
+                        s["output"] = _truncate_log(s["output"])
+                    truncated_steps.append(s)
+                script.last_log = json.dumps(truncated_steps)
                 script.last_status = status
                 script.last_run = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 db.commit()
@@ -303,17 +379,17 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     # Step 1: Setup
     t0 = time.time()
     setup_log = f"Runner: GitHubActions-Universal\nRuntime: {runtime.upper()}\nTime: {datetime.now()}\n"
-    
+
     delay = 0
     if override_delay >= 0: delay = override_delay
     elif script_data['random_delay'] > 0: delay = random.randint(0, script_data['random_delay'])
-    
+
     if delay > 0:
         setup_log += f"Anti-Bot: Sleeping {delay}s...\n"
         steps_log.append({"name": "Set up job", "status": 2, "duration": "...", "output": setup_log})
         update_db()
         await asyncio.sleep(delay)
-    
+
     steps_log = [s for s in steps_log if s["name"] != "Set up job"]
     steps_log.append({"name": "Set up job", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": setup_log})
     update_db()
@@ -322,7 +398,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     t0 = time.time()
     steps_log.append({"name": "Check environment", "status": 2, "duration": "...", "output": "Checking runtime environment..."})
     update_db()
-    
+
     env_check_log = []
     if runtime == "python":
         env_check_log.append(f"Python version: {sys.version.split()[0]}")
@@ -331,7 +407,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         env_check_log.append("Node.js runtime")
     env_check_log.append(f"Working directory: {SCRIPTS_DIR}")
     env_check_log.append(f"Virtual env directory: {VENVS_DIR}")
-    
+
     steps_log.pop()
     steps_log.append({"name": "Check environment", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(env_check_log)})
     update_db()
@@ -340,12 +416,12 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     t0 = time.time()
     steps_log.append({"name": "Install dependencies", "status": 2, "duration": "...", "output": f"Installing {runtime} packages..."})
     update_db()
-    
+
     exec_cmd = ""
     env_dir = os.path.join(VENVS_DIR, str(script_id))
-    
+
     try:
-        exec_cmd, out, dur = await prepare_env(script_data['id'], script_data['requirements'], runtime)
+        exec_cmd, out, dur = await prepare_env(script_data['id'], script_data['requirements'], runtime, script_data['req_hash'])
         steps_log.pop()
         steps_log.append({"name": "Install dependencies", "status": 0, "duration": f"{dur:.2f}s", "output": out})
         update_db()
@@ -355,52 +431,44 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         update_db("Failed")
         return
 
-    # Step 4: Check browser (for Selenium scripts)
+    # Step 4: Check browser (for Selenium/Playwright scripts)
     needs_browser = script_data['requirements'] and ('selenium' in script_data['requirements'].lower() or 'playwright' in script_data['requirements'].lower())
     if needs_browser:
         t0 = time.time()
         steps_log.append({"name": "Check browser", "status": 2, "duration": "...", "output": "Checking browser availability..."})
         update_db()
-        
+
         browser_log = []
         chrome_bin = "/usr/bin/google-chrome"
         chromedriver = "/usr/bin/chromedriver"
-        
+
         if os.path.exists(chrome_bin):
-            # 获取 Chrome 版本
             try:
                 result = subprocess.run([chrome_bin, "--version"], capture_output=True, text=True)
-                chrome_version = result.stdout.strip()
-                browser_log.append(f"✓ Google Chrome: {chrome_version}")
+                browser_log.append(f"✓ Google Chrome: {result.stdout.strip()}")
             except:
                 browser_log.append(f"✓ Google Chrome found: {chrome_bin}")
         else:
             browser_log.append(f"✗ Google Chrome not found at {chrome_bin}")
-        
+
         if os.path.exists(chromedriver):
             try:
                 result = subprocess.run([chromedriver, "--version"], capture_output=True, text=True)
-                driver_version = result.stdout.strip()
-                browser_log.append(f"✓ ChromeDriver: {driver_version}")
+                browser_log.append(f"✓ ChromeDriver: {result.stdout.strip()}")
             except:
                 browser_log.append(f"✓ ChromeDriver found: {chromedriver}")
         else:
             browser_log.append(f"✗ ChromeDriver not found at {chromedriver}")
-        
-        # 检查 Xvfb
+
         xvfb_available = shutil.which("xvfb-run") is not None
-        if xvfb_available:
-            browser_log.append("✓ Xvfb virtual display: available")
-        else:
-            browser_log.append("⚠ Xvfb not found, using headless mode")
-        
+        browser_log.append("✓ Xvfb virtual display: available" if xvfb_available else "⚠ Xvfb not found, using headless mode")
         browser_log.append("Environment: GitHub Actions compatible")
-        
+
         steps_log.pop()
         steps_log.append({"name": "Check browser", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(browser_log)})
         update_db()
 
-    # Step 3: Run Script
+    # Step 5: Run Script
     t0 = time.time()
     steps_log.append({"name": "Run script", "status": 2, "duration": "...", "output": "Running..."})
     update_db()
@@ -409,8 +477,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
     safe_name = "".join([c for c in script_data['name'] if c.isalnum() or c in (' ', '_', '-')]).strip()
     file_name = f"{safe_name}_{script_data['id']}{file_ext}"
     file_path = os.path.join(SCRIPTS_DIR, file_name)
-    
-    # 为 Python 脚本注入 GitHub API 代理模块
+
     script_code = script_data['code']
     if runtime == "python":
         proxy_import = '''# === GitHub API Proxy (Auto-injected) ===
@@ -423,7 +490,6 @@ except: pass
 # === End Proxy ===
 
 # === Selenium ChromeDriver Patch (Auto-injected) ===
-# 让 Selenium 使用 Docker 预装的 Google Chrome，与 GitHub Actions 官方环境一致
 def _patch_selenium_chrome():
     try:
         from selenium.webdriver.chrome.service import Service
@@ -431,25 +497,19 @@ def _patch_selenium_chrome():
         from selenium import webdriver
         _original_chrome_init = webdriver.Chrome.__init__
         def _patched_chrome_init(self, options=None, service=None, keep_alive=True):
-            # 使用本地 ChromeDriver
             if service is None:
                 chromedriver_path = os.getenv("CHROMEDRIVER", "/usr/bin/chromedriver")
                 if os.path.exists(chromedriver_path):
                     service = Service(executable_path=chromedriver_path)
-            # 如果没有传入 options，创建一个
             if options is None:
                 options = Options()
-            # 设置 Chrome 路径 (Google Chrome)
             chrome_bin = os.getenv("CHROME_BIN", "/usr/bin/google-chrome")
             if os.path.exists(chrome_bin):
                 options.binary_location = chrome_bin
-            # Docker 容器内必需的参数
-            options.add_argument("--no-sandbox")  # Docker 容器内必需
-            options.add_argument("--disable-dev-shm-usage")  # 配合 shm_size 使用
-            # 如果没有 DISPLAY 环境变量（无 Xvfb），则使用 headless 模式
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
             if not os.getenv("DISPLAY"):
                 options.add_argument("--headless=new")
-            # 通用优化参数
             options.add_argument("--disable-gpu")
             options.add_argument("--window-size=1920,1080")
             options.add_argument("--disable-extensions")
@@ -458,25 +518,22 @@ def _patch_selenium_chrome():
             options.add_argument("--disable-sync")
             return _original_chrome_init(self, options=options, service=service, keep_alive=keep_alive)
         webdriver.Chrome.__init__ = _patched_chrome_init
-    except Exception as e:
-        pass  # 如果补丁失败，继续使用原始逻辑
+    except Exception:
+        pass
 _patch_selenium_chrome()
 # === End Selenium Patch ===
 
 '''
         script_code = proxy_import + script_code
-    
+
     with open(file_path, "w", encoding="utf-8") as f: f.write(script_code)
-    
-    # 注入环境变量
+
     env_vars = os.environ.copy()
-    # 1. 注入全局 Secrets（使用短连接）
     db_secrets = SessionLocal()
     try:
         for s in db_secrets.query(Secret).all(): env_vars[s.key] = s.value
     finally:
         db_secrets.close()
-    # 2. 注入任务独享 Secrets (覆盖全局)
     try:
         task_specific_secrets = json.loads(script_data['task_secrets'])
         if isinstance(task_specific_secrets, dict):
@@ -488,26 +545,23 @@ _patch_selenium_chrome()
     internal_token = create_access_token({"sub": os.getenv("ADMIN_USER", "admin")})
     env_vars["FLUX_TOKEN"] = internal_token
     env_vars["FLUX_API_URL"] = "http://127.0.0.1:8000"
-    env_vars["FLUX_SCRIPT_ID"] = str(script_data['id'])  # 注入脚本ID供更新任务Secrets使用
+    env_vars["FLUX_SCRIPT_ID"] = str(script_data['id'])
     env_vars["PYTHONUNBUFFERED"] = "1"
-    env_vars["GITHUB_ACTIONS"] = "true" # 模拟 GitHub Actions 环境
-    
-    # Chrome/Selenium 环境变量 - 与 GitHub Actions 官方环境一致
+    env_vars["GITHUB_ACTIONS"] = "true"
     env_vars["CHROME_BIN"] = "/usr/bin/google-chrome"
     env_vars["CHROMEDRIVER"] = "/usr/bin/chromedriver"
-    env_vars["DISPLAY"] = ":99"  # Xvfb 虚拟显示
-    env_vars["WDM_LOCAL"] = "1"  # webdriver-manager: 使用本地缓存
-    env_vars["WDM_SSL_VERIFY"] = "0"  # webdriver-manager: 禁用 SSL 验证
-    env_vars["SE_AVOID_STATS"] = "true"  # Selenium: 禁用统计上报
-    
+    env_vars["DISPLAY"] = ":99"
+    env_vars["WDM_LOCAL"] = "1"
+    env_vars["WDM_SSL_VERIFY"] = "0"
+    env_vars["SE_AVOID_STATS"] = "true"
+
     if runtime == "node":
         node_modules_path = os.path.join(env_dir, "node_modules")
         env_vars["NODE_PATH"] = node_modules_path
-    
+
     try:
-        # 对需要浏览器的脚本使用 xvfb-run 启动虚拟显示
         use_xvfb = needs_browser and shutil.which("xvfb-run") is not None
-        
+
         if runtime == "node":
             if use_xvfb:
                 cmd_args = ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", "node", file_path]
@@ -519,23 +573,39 @@ _patch_selenium_chrome()
             else:
                 cmd_args = [exec_cmd, file_path]
 
+        # 修复#1: 使用 start_new_session=True 让子进程独立成进程组，便于超时时整组杀掉
         proc = await asyncio.create_subprocess_exec(
-            *cmd_args, 
-            env=env_vars, 
-            stdout=subprocess.PIPE, 
-            stderr=subprocess.PIPE
+            *cmd_args,
+            env=env_vars,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True   # 关键：分配独立进程组
         )
         try:
             stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), 
+                proc.communicate(),
                 timeout=SCRIPT_TIMEOUT_SECONDS
             )
+            output = _truncate_log(stdout.decode().strip() + "\n" + stderr.decode().strip())
             steps_log.pop()
-            steps_log.append({"name": "Run script", "status": 0 if proc.returncode==0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": stdout.decode().strip() + "\n" + stderr.decode().strip()})
+            steps_log.append({"name": "Run script", "status": 0 if proc.returncode == 0 else 1, "duration": f"{time.time()-t0:.2f}s", "output": output})
             update_db("Success" if proc.returncode == 0 else "Failed")
         except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            # 修复#1: 超时时通过 os.killpg 杀掉整个进程组（含浏览器子进程）
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGTERM)
+                await asyncio.sleep(3)
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            except ProcessLookupError:
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            except asyncio.TimeoutError:
+                pass
             steps_log.pop()
             steps_log.append({"name": "Run script", "status": 1, "duration": f"{time.time()-t0:.2f}s", "output": f"Script execution timed out after {SCRIPT_TIMEOUT_SECONDS}s"})
             update_db("Timeout")
@@ -549,7 +619,7 @@ _patch_selenium_chrome()
 def add_job_to_scheduler(script: Script):
     try: scheduler.remove_job(str(script.id))
     except: pass
-    if not script.is_active: return # 如果未激活(暂停)，不添加到调度器
+    if not script.is_active: return
     try:
         parts = script.cron_exp.strip().split()
         if len(parts) != 5: return
@@ -567,31 +637,42 @@ app.mount("/assets", StaticFiles(directory=f"{STATIC_DIR}/assets"), name="assets
 def startup_event():
     scheduler.start()
     db = SessionLocal()
+
     # 自动迁移：检查并添加新列
-    for col in ["requirements", "last_log", "task_secrets", "is_active"]:
+    for col in ["requirements", "last_log", "task_secrets", "is_active", "req_hash"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
-        except: 
-            try: 
-                # SQLite 和 MySQL 的列添加语法略有不同，这里做一个简单的兼容
-                # 实际上 SQLAlchemy 最好用 Alembic，这里为了单文件简便处理
+        except:
+            try:
                 db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''"))
                 db.commit()
             except Exception as e: logger.error(f"Migration error for {col}: {e}")
-    
+
+    # 修复#3: 启动时将所有 Running 状态的任务置为 Failed (Killed)，避免重启后永久卡住
+    try:
+        stale_count = db.query(Script).filter(Script.last_status == "Running").update(
+            {"last_status": "Failed (Killed)"},
+            synchronize_session=False
+        )
+        if stale_count:
+            logger.warning(f"Startup: reset {stale_count} stale 'Running' task(s) to 'Failed (Killed)'")
+        db.commit()
+    except Exception as e:
+        logger.error(f"Startup stale task cleanup error: {e}")
+        db.rollback()
+
     u = os.getenv("ADMIN_USER", "admin")
     p = os.getenv("ADMIN_PASSWORD", "admin")
     if not db.query(User).filter(User.username == u).first():
         db.add(User(username=u, hashed_password=pwd_context.hash(p))); db.commit()
-    
+
     if not db.query(Secret).filter(Secret.key == "GITHUB_ACTIONS").first():
         db.add(Secret(key="GITHUB_ACTIONS", value="true")); db.commit()
-    
+
     for s in db.query(Script).filter(Script.is_active == True).all(): add_job_to_scheduler(s)
-    
-    # 打印调度器信息，确认时区
+
     logger.info(f"Scheduler initialized with timezone: {scheduler.timezone}")
     logger.info(f"Scheduler running: {scheduler.running}")
-    
+
     db.close()
 
 @app.post("/token")
@@ -603,10 +684,9 @@ async def login(form: OAuth2PasswordRequestForm = Depends(), db: Session = Depen
 @app.get("/api/scripts", response_model=List[ScriptResponse])
 def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
     scripts = db.query(Script).all()
-    # 确保返回所有字段
     return [ScriptResponse(
-        id=s.id, name=s.name, code=s.code, requirements=s.requirements, 
-        cron=s.cron_exp, delay=s.random_delay, is_active=s.is_active, 
+        id=s.id, name=s.name, code=s.code, requirements=s.requirements,
+        cron=s.cron_exp, delay=s.random_delay, is_active=s.is_active,
         last_run=s.last_run, last_status=s.last_status, last_log=s.last_log,
         task_secrets=s.task_secrets
     ) for s in scripts]
@@ -615,14 +695,15 @@ def get_scripts(db: Session = Depends(get_db), u=Depends(get_current_user)):
 def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
     if db.query(Script).filter(Script.name == s.name).first(): raise HTTPException(status_code=400, detail="Exists")
     new_s = Script(
-        name=s.name, code=s.code, requirements=s.requirements, 
+        name=s.name, code=s.code, requirements=s.requirements,
         cron_exp=s.cron, random_delay=s.delay, is_active=s.is_active,
         task_secrets=s.task_secrets,
+        req_hash="",
         last_log="[]"
     )
     db.add(new_s); db.commit(); db.refresh(new_s); add_job_to_scheduler(new_s)
     return ScriptResponse(
-        id=new_s.id, name=new_s.name, code=new_s.code, requirements=new_s.requirements, 
+        id=new_s.id, name=new_s.name, code=new_s.code, requirements=new_s.requirements,
         cron=new_s.cron_exp, delay=new_s.random_delay, is_active=new_s.is_active,
         task_secrets=new_s.task_secrets,
         last_run=new_s.last_run, last_status=new_s.last_status, last_log=new_s.last_log
@@ -632,18 +713,21 @@ def create_script(s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_cu
 def update_script(script_id: int, s: ScriptBase, db: Session = Depends(get_db), u=Depends(get_current_user)):
     item = db.query(Script).filter(Script.id == script_id).first()
     if not item: raise HTTPException(status_code=404)
-    
+
     item.name = s.name
     item.code = s.code
+    # 修复#7: 若 requirements 内容变更，清空哈希以强制下次重装
+    if (item.requirements or "") != (s.requirements or ""):
+        item.req_hash = ""
     item.requirements = s.requirements
     item.cron_exp = s.cron
     item.random_delay = s.delay
-    item.is_active = s.is_active # 更新激活状态
-    item.task_secrets = s.task_secrets # 更新任务 Secrets
-    
+    item.is_active = s.is_active
+    item.task_secrets = s.task_secrets
+
     db.commit(); db.refresh(item); add_job_to_scheduler(item)
     return ScriptResponse(
-        id=item.id, name=item.name, code=item.code, requirements=item.requirements, 
+        id=item.id, name=item.name, code=item.code, requirements=item.requirements,
         cron=item.cron_exp, delay=item.random_delay, is_active=item.is_active,
         task_secrets=item.task_secrets,
         last_run=item.last_run, last_status=item.last_status, last_log=item.last_log
@@ -695,7 +779,7 @@ def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_c
 
 @app.put("/api/secrets/{key}")
 def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
-    """允许脚本通过 API 更新 Secret 值（用于 REPO_TOKEN 功能）"""
+    """允许脚本通过 API 更新 Secret 值"""
     exist = db.query(Secret).filter(Secret.key == key).first()
     if not exist:
         raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
@@ -705,22 +789,17 @@ def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Sessi
 
 @app.put("/api/scripts/{script_id}/secrets/{key}")
 def update_task_secret(script_id: int, key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
-    """更新任务独享的 Secrets（脚本使用 FLUX_SCRIPT_ID 调用）"""
+    """更新任务独享的 Secrets"""
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404, detail=f"Script {script_id} not found")
-    
-    # 解析现有的 task_secrets
     try:
         secrets_dict = json.loads(script.task_secrets or "{}")
     except:
         secrets_dict = {}
-    
-    # 更新或新增指定的 key
     secrets_dict[key] = value
     script.task_secrets = json.dumps(secrets_dict)
     db.commit()
-    
     return {"status": "updated", "script_id": script_id, "key": key}
 
 @app.get("/{full_path:path}")

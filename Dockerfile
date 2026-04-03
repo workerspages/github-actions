@@ -42,11 +42,22 @@ RUN pip3 install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.
     pip3 install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 4. 安装 Playwright 浏览器内核及系统依赖
-RUN playwright install --with-deps chromium
+# 修复: ARM64 下 QEMU 模拟时 playwright install --with-deps 会因 ldconfig
+#       在 QEMU 中触发 SIGSEGV 导致 libc-bin 配置失败。
+# 解决策略:
+#   - amd64: 原生执行，保持 --with-deps chromium
+#   - arm64: 跳过 --with-deps，改用第5步安装的系统 chromium-browser
+#            并通过 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD + 软链接让 playwright 找到浏览器
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        echo "[amd64] playwright install --with-deps chromium" \
+        && playwright install --with-deps chromium; \
+    else \
+        echo "[arm64] Skipping playwright --with-deps to avoid QEMU/ldconfig SIGSEGV" \
+        && playwright install chromium || true; \
+    fi
 
 # 5. 安装浏览器 (支持多架构)
-ARG TARGETARCH
-
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb wget ca-certificates \
     && if [ "$TARGETARCH" = "amd64" ]; then \
@@ -65,21 +76,36 @@ RUN apt-get update \
     else \
         echo "Installing Chromium for ARM64/Other..." \
         && apt-get install -y --no-install-recommends chromium-browser chromium-chromedriver \
-        && ln -s /usr/bin/chromium-browser /usr/bin/google-chrome; \
+        && ln -sf /usr/bin/chromium-browser /usr/bin/google-chrome \
+        && ln -sf /usr/bin/chromium-chromedriver /usr/bin/chromedriver; \
     fi \
     && apt-get clean && rm -rf /var/lib/apt/lists/* \
     && pip3 install --no-cache-dir selenium webdriver-manager -i https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 6. ARM64: 让 Playwright 优先使用系统 chromium-browser
+#    通过环境变量告知 playwright 可执行文件路径（跳过内置浏览器查找）
+RUN if [ "$TARGETARCH" != "amd64" ] && [ -f /usr/bin/chromium-browser ]; then \
+        PLAYWRIGHT_DIR=$(python3 -c "import playwright; import os; print(os.path.dirname(playwright.__file__))") \
+        && CHROMIUM_DIR=$(find /root/.cache/ms-playwright -name "chrome" -type f 2>/dev/null | head -1 | xargs dirname 2>/dev/null || true) \
+        && if [ -z "$CHROMIUM_DIR" ]; then \
+            mkdir -p /root/.cache/ms-playwright/chromium-system/chrome-linux \
+            && ln -sf /usr/bin/chromium-browser /root/.cache/ms-playwright/chromium-system/chrome-linux/chrome \
+            && echo "ARM64: symlinked system chromium into playwright cache"; \
+        fi; \
+    fi
 
 # 设置环境变量
 ENV CHROME_BIN=/usr/bin/google-chrome
 ENV CHROMEDRIVER_PATH=/usr/bin/chromedriver
 ENV DISPLAY=:99
+# ARM64: 允许 playwright 使用系统已安装的浏览器
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=0
 
-# 6. 复制程序代码
+# 7. 复制程序代码
 COPY backend/app /app/app
 COPY --from=frontend-builder /build/dist /app/static
 
-# 7. 创建数据目录
+# 8. 创建数据目录
 RUN mkdir -p /app/data /app/scripts /app/data/venvs
 
 ENV PYTHONPATH=/app

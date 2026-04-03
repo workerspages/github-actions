@@ -109,7 +109,7 @@ class Script(Base):
     last_status = Column(String(50), nullable=True)
     last_log = Column(Text, default="[]")
     task_secrets = Column(Text, default="{}")
-    req_hash = Column(String(64), default="")  # 修复#7: 依赖哈希，避免重复安装
+    req_hash = Column(String(64), default="")  # 修复#7: 依赖哈希，避免重复安装；使用 String(64) 兼容 MySQL
 
 class Secret(Base):
     __tablename__ = "secrets"
@@ -755,13 +755,27 @@ async def startup_event():
     def _migrate():
         db = SessionLocal()
         try:
-            for col in ["requirements", "last_log", "task_secrets", "is_active", "req_hash"]:
-                try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
+            # 修复: MySQL TEXT 列不支持 DEFAULT ''，按列类型差异化定义
+            # - TEXT 类列统一使用 NULL（MySQL 兼容）
+            # - req_hash 改为 VARCHAR(64) 以支持 DEFAULT ''
+            col_defs = {
+                "requirements": "TEXT NULL",
+                "last_log":     "TEXT NULL",
+                "task_secrets": "TEXT NULL",
+                "is_active":    "BOOLEAN DEFAULT TRUE",
+                "req_hash":     "VARCHAR(64) DEFAULT ''",
+            }
+
+            for col, col_def in col_defs.items():
+                try:
+                    db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
                 except:
                     try:
-                        db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} TEXT DEFAULT ''"))
+                        db.execute(text(f"ALTER TABLE scripts ADD COLUMN {col} {col_def}"))
                         db.commit()
-                    except Exception as e: logger.error(f"Migration error for {col}: {e}")
+                        logger.info(f"Migration: added column '{col}' ({col_def})")
+                    except Exception as e:
+                        logger.error(f"Migration error for {col}: {e}")
 
             # 修复#3: 启动时将所有 Running 状态置为 Failed (Killed)
             try:

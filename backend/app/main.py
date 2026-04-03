@@ -43,7 +43,6 @@ DATA_DIR = "/app/data"
 SCRIPT_TIMEOUT_SECONDS = int(os.getenv("SCRIPT_TIMEOUT", "7200"))  # 默认 2 小时超时
 
 # --- 修复#4: JWT Secret 持久化 ---
-# 优先使用环境变量，否则从数据目录的隐藏文件中读取/生成，避免每次重启都变化
 _SECRET_KEY_FILE = os.path.join(DATA_DIR, ".jwt_secret")
 
 def _load_or_create_secret_key() -> str:
@@ -188,6 +187,23 @@ def _truncate_log(text: str) -> str:
         text = "\n".join(lines)
     return text
 
+def _compute_req_hash(requirements: str) -> str:
+    return hashlib.md5((requirements or "").strip().encode()).hexdigest()
+
+def _persist_req_hash(script_id: int, new_hash: str):
+    """修复#7: 安装成功后将新哈希写回数据库，下次运行前可以正确比对跳过安装"""
+    db = SessionLocal()
+    try:
+        script = db.query(Script).filter(Script.id == script_id).first()
+        if script:
+            script.req_hash = new_hash
+            db.commit()
+    except Exception as e:
+        logger.error(f"Failed to persist req_hash for script {script_id}: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
 # ==========================================
 # 5. 核心逻辑
 # ==========================================
@@ -198,13 +214,11 @@ def detect_runtime(code: str) -> str:
         return "node"
     return "python"
 
-def _req_hash(requirements: str) -> str:
-    return hashlib.md5((requirements or "").strip().encode()).hexdigest()
-
-async def prepare_env(script_id: int, requirements: str, runtime: str, current_hash: str = "") -> tuple[str, str, float]:
+async def prepare_env(script_id: int, requirements: str, runtime: str, current_db_hash: str = "") -> tuple[str, str, float]:
     """
     修复#2: 所有 subprocess.run 阻塞调用替换为 asyncio.create_subprocess_exec 或 asyncio.to_thread
-    修复#7: 通过 requirements 哈希值避免每次都重复安装依赖
+    修复#7: 通过 requirements 哈希値避免每次都重复安装依赖
+    修复#8: Playwright 优先模式下，输出明确提示建议使用 Playwright 原生调用内置 Chrome
     """
     start_time = time.time()
     env_dir = os.path.join(VENVS_DIR, str(script_id))
@@ -213,16 +227,23 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_h
     if not os.path.exists(env_dir):
         os.makedirs(env_dir, exist_ok=True)
 
-    new_hash = _req_hash(requirements)
+    new_hash = _compute_req_hash(requirements)
     hash_file = os.path.join(env_dir, ".req_hash")
 
     try:
         if runtime == "python":
             needs_playwright = requirements and "playwright" in requirements.lower()
+            needs_selenium = requirements and "selenium" in requirements.lower()
 
             if needs_playwright:
-                logs.append("Detected playwright dependency, using system Python (pre-installed)")
-                logs.append("Skipping venv to reuse Docker's pre-installed browsers")
+                # 修复#8: 明确输出 Playwright 优先建议
+                logs.append("[推荐] 检测到 playwright 依赖，使用系统 Python + Docker 预装 Chromium。")
+                logs.append("[建议] 优先使用 playwright 原生 API（async_playwright / sync_playwright）而非 Selenium WebDriver，")
+                logs.append("        可获得更高的稳定性与性能，并直接复用镜像预装的浏览器无需额外下载。")
+                logs.append("Skipping venv to reuse Docker's pre-installed browsers.")
+
+                if needs_selenium:
+                    logs.append("[注意] 检测到 selenium + playwright 并存。建议移除 selenium 改用 playwright 原生 API，减少冲突风险。")
 
                 other_deps = []
                 for line in requirements.strip().split('\n'):
@@ -231,27 +252,43 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_h
                         other_deps.append(line.strip())
 
                 if other_deps:
-                    logs.append(f"Installing additional deps: {', '.join(other_deps)}")
-                    cmd = ["/usr/bin/pip3", "install", "--break-system-packages"] + other_deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
-                    proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                    stdout, stderr = await proc.communicate()
-                    if stdout: logs.append(stdout.decode())
-                    if stderr: logs.append(stderr.decode())
-                    if proc.returncode != 0:
-                        logs.append("Warning: Some deps may have failed, but continuing with system Python")
+                    # 修复#7: playwright 模式也对其他依赖做哈希比对
+                    saved_hash = ""
+                    if os.path.exists(hash_file):
+                        with open(hash_file, "r") as f:
+                            saved_hash = f.read().strip()
+
+                    if saved_hash == new_hash:
+                        logs.append(f"Dependencies unchanged (hash: {new_hash[:8]}...), skipping install.")
+                    else:
+                        logs.append(f"Installing additional deps: {', '.join(other_deps)}")
+                        cmd = ["/usr/bin/pip3", "install", "--break-system-packages"] + other_deps + ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+                        proc = await asyncio.create_subprocess_exec(*cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        stdout, stderr = await proc.communicate()
+                        if stdout: logs.append(stdout.decode())
+                        if stderr: logs.append(stderr.decode())
+                        if proc.returncode != 0:
+                            logs.append("Warning: Some deps may have failed, but continuing with system Python")
+                        else:
+                            # 修复#7: 安装成功 → 写回哈希到文件和数据库
+                            with open(hash_file, "w") as f: f.write(new_hash)
+                            await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
 
                 return "/usr/bin/python3", "\n".join(logs), time.time() - start_time
+
+            # 非 playwright 路径: 使用 venv 隔离
+            if needs_selenium:
+                logs.append("[建议] 如果将来添加浏览器自动化功能，建议评估改用 playwright 替代 selenium，")
+                logs.append("        可直接复用镜像内置 Chrome，避免 webdriver-manager 在线下载驱动程序带来的不稳定性。")
 
             python_exec = os.path.join(env_dir, "bin", "python")
             if not os.path.exists(python_exec):
                 logs.append("Creating Python venv...")
-                # 修复#2: 使用 asyncio.to_thread 包装阻塞的 venv 创建调用
                 await asyncio.to_thread(
                     lambda: subprocess.run([sys.executable, "-m", "venv", env_dir], check=True)
                 )
 
             if requirements and requirements.strip():
-                # 修复#7: 对比哈希，若依赖未变则跳过安装
                 saved_hash = ""
                 if os.path.exists(hash_file):
                     with open(hash_file, "r") as f:
@@ -269,7 +306,9 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_h
                     if stdout: logs.append(stdout.decode())
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0: raise Exception("Pip install failed")
+                    # 修复#7: 安装成功 → 写回哈希到文件和数据库
                     with open(hash_file, "w") as f: f.write(new_hash)
+                    await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
 
             return python_exec, "\n".join(logs), time.time() - start_time
 
@@ -277,7 +316,6 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_h
             logs.append(f"Preparing Node.js environment at {env_dir}...")
             pkg_file = os.path.join(env_dir, "package.json")
             if not os.path.exists(pkg_file):
-                # 修复#2: 使用 asyncio.to_thread 包装阻塞的 npm init
                 await asyncio.to_thread(
                     lambda: subprocess.run(["npm", "init", "-y"], cwd=env_dir, check=True, stdout=subprocess.DEVNULL)
                 )
@@ -314,7 +352,9 @@ async def prepare_env(script_id: int, requirements: str, runtime: str, current_h
                     if stdout: logs.append(stdout.decode())
                     if stderr: logs.append(stderr.decode())
                     if proc.returncode != 0: raise Exception("Npm install failed")
+                    # 修复#7: 安装成功 → 写回哈希到文件和数据库
                     with open(hash_file, "w") as f: f.write(new_hash)
+                    await asyncio.to_thread(_persist_req_hash, script_id, new_hash)
 
             return "node", "\n".join(logs), time.time() - start_time
 
@@ -354,7 +394,6 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         try:
             script = db.query(Script).filter(Script.id == script_id).first()
             if script:
-                # 修复#5: 序列化日志时对每个 step 的 output 进行截断
                 truncated_steps = []
                 for step in steps_log:
                     s = dict(step)
@@ -464,6 +503,18 @@ async def run_script_task(script_id: int, override_delay: int = -1):
         browser_log.append("✓ Xvfb virtual display: available" if xvfb_available else "⚠ Xvfb not found, using headless mode")
         browser_log.append("Environment: GitHub Actions compatible")
 
+        # 修复#8: 在 Check browser 输出中附加 Playwright 优先输出评估建议
+        needs_playwright = script_data['requirements'] and 'playwright' in script_data['requirements'].lower()
+        needs_selenium_only = (not needs_playwright) and 'selenium' in script_data['requirements'].lower()
+        if needs_playwright:
+            browser_log.append("")
+            browser_log.append("✅ 模式: Playwright 原生调用（推荐）")
+            browser_log.append("   直接调用镜像内置 Chromium，无需 webdriver 中间层，稳定性最强。")
+        if needs_selenium_only:
+            browser_log.append("")
+            browser_log.append("⚠ 模式: Selenium WebDriver")
+            browser_log.append("   建议未来评估将脚本迁移到 playwright，可直接复用内置 Chrome，避免 webdriver-manager 下载不稳定问题。")
+
         steps_log.pop()
         steps_log.append({"name": "Check browser", "status": 0, "duration": f"{time.time()-t0:.2f}s", "output": "\n".join(browser_log)})
         update_db()
@@ -480,6 +531,7 @@ async def run_script_task(script_id: int, override_delay: int = -1):
 
     script_code = script_data['code']
     if runtime == "python":
+        # 修复#8: 自动注入头部说明注释，影印平台指引信息
         proxy_import = '''# === GitHub API Proxy (Auto-injected) ===
 import sys, os
 _proxy_path = "/app/app"
@@ -488,6 +540,20 @@ try:
     import github_api_proxy
 except: pass
 # === End Proxy ===
+
+# === Platform Guidance (Auto-injected) ===
+# 【浏览器自动化建议】
+# ✅ 推荐: playwright (async_playwright / sync_playwright)
+#   - 直接复用镜像内置 Chromium，调用方式:
+#     from playwright.sync_api import sync_playwright
+#     with sync_playwright() as p:
+#         browser = p.chromium.launch(headless=True)
+#         page = browser.new_page()
+#
+# ⚠ 兼容: selenium (webdriver.Chrome)
+#   - 已自动打补丁使用内置 ChromeDriver，无需额外配置。
+#   - 长期建议迁移到 playwright 以获得更高稳定性。
+# === End Guidance ===
 
 # === Selenium ChromeDriver Patch (Auto-injected) ===
 def _patch_selenium_chrome():
@@ -579,7 +645,7 @@ _patch_selenium_chrome()
             env=env_vars,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True   # 关键：分配独立进程组
+            start_new_session=True
         )
         try:
             stdout, stderr = await asyncio.wait_for(
@@ -638,7 +704,6 @@ def startup_event():
     scheduler.start()
     db = SessionLocal()
 
-    # 自动迁移：检查并添加新列
     for col in ["requirements", "last_log", "task_secrets", "is_active", "req_hash"]:
         try: db.execute(text(f"SELECT {col} FROM scripts LIMIT 1"))
         except:
@@ -647,7 +712,7 @@ def startup_event():
                 db.commit()
             except Exception as e: logger.error(f"Migration error for {col}: {e}")
 
-    # 修复#3: 启动时将所有 Running 状态的任务置为 Failed (Killed)，避免重启后永久卡住
+    # 修复#3: 启动时将所有 Running 状态的任务置为 Failed (Killed)
     try:
         stale_count = db.query(Script).filter(Script.last_status == "Running").update(
             {"last_status": "Failed (Killed)"},
@@ -716,7 +781,6 @@ def update_script(script_id: int, s: ScriptBase, db: Session = Depends(get_db), 
 
     item.name = s.name
     item.code = s.code
-    # 修复#7: 若 requirements 内容变更，清空哈希以强制下次重装
     if (item.requirements or "") != (s.requirements or ""):
         item.req_hash = ""
     item.requirements = s.requirements
@@ -749,7 +813,6 @@ async def run_now(script_id: int, u=Depends(get_current_user)):
 
 @app.post("/api/scripts/{script_id}/cancel")
 def cancel_script(script_id: int, db: Session = Depends(get_db), u=Depends(get_current_user)):
-    """手动将卡住的任务状态重置为 Cancelled"""
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404)
@@ -779,7 +842,6 @@ def delete_secret(secret_id: int, db: Session = Depends(get_db), u=Depends(get_c
 
 @app.put("/api/secrets/{key}")
 def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
-    """允许脚本通过 API 更新 Secret 值"""
     exist = db.query(Secret).filter(Secret.key == key).first()
     if not exist:
         raise HTTPException(status_code=404, detail=f"Secret '{key}' not found")
@@ -789,7 +851,6 @@ def update_secret_by_key(key: str, value: str = Body(..., embed=True), db: Sessi
 
 @app.put("/api/scripts/{script_id}/secrets/{key}")
 def update_task_secret(script_id: int, key: str, value: str = Body(..., embed=True), db: Session = Depends(get_db), u=Depends(get_current_user)):
-    """更新任务独享的 Secrets"""
     script = db.query(Script).filter(Script.id == script_id).first()
     if not script:
         raise HTTPException(status_code=404, detail=f"Script {script_id} not found")
